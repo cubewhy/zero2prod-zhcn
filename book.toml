@@ -1,0 +1,6 @@
+[book]
+authors = ["cubewhy"]
+language = "zhcn"
+src = "src"
+title = "在Rust中从零到生产 简体中文版"
+
