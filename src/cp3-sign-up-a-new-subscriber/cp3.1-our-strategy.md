@@ -12,4 +12,4 @@
 
 我们将添加一个垫脚石，使整个过程更容易理解：在处理 /subscriptions 之前，我们将实现一个 /health_check 端点。虽然没有业务逻辑，但这是一个很好的机会，让我们熟悉我们的 Web 框架，并了解其所有不同的组成部分。
 
-我们将依靠我们的持续集成流水线来在整个过程中保持控制——如果您尚未设置它，请快速浏览 [第一章](/getting-started)（或获取一个[现成的模板](https://www.lpalmieri.com/posts/2020-06-06-zero-to-production-1-setup-toolchain-ides-ci/#5-2-ready-to-go-ci-pipelines)）。
+我们将依靠我们的持续集成流水线来在整个过程中保持控制——如果您尚未设置它，请快速浏览 [第一章](/cp1-getting-started)（或获取一个[现成的模板](https://www.lpalmieri.com/posts/2020-06-06-zero-to-production-1-setup-toolchain-ides-ci/#5-2-ready-to-go-ci-pipelines)）。
