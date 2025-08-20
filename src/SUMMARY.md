@@ -25,3 +25,4 @@
   - [实现我们的第一个集成测试](cp3-sign-up-a-new-subscriber/cp3.5-implementing-our-first-integration-test.md)
   - [回顾](cp3-sign-up-a-new-subscriber/cp3.6-refocus.md)
   - [使用HTML表单](cp3-sign-up-a-new-subscriber/cp3.7-working-with-html-forms.md)
+  - [存储数据: 数据库](cp3-sign-up-a-new-subscriber/cp3.8-storing-data-databases.md)
