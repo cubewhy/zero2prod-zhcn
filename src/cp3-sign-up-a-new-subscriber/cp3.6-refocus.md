@@ -6,9 +6,9 @@
 
 现在是时候利用我们学到的知识，最终完成我们电子邮件通讯项目的第一个用户故事了:
 
-> As a blog visitor,
-> I want to subscribe to the newsletter,
-> So that I can receive email updates when new content is published on the blog.
+> 作为博客访问者,
+> 我想订阅新闻简报,
+> 以便在博客发布新内容时收到电子邮件更新
 
 我们希望博客访问者在网页嵌入的表单中输入他们的电子邮件地址。
 
