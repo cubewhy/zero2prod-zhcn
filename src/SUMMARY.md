@@ -24,3 +24,4 @@
   - [我们的第一个集成测试](cp3-sign-up-a-new-subscriber/cp3.4-our-first-integration-test.md)
   - [实现我们的第一个集成测试](cp3-sign-up-a-new-subscriber/cp3.5-implementing-our-first-integration-test.md)
   - [回顾](cp3-sign-up-a-new-subscriber/cp3.6-refocus.md)
+  - [使用HTML表单](cp3-sign-up-a-new-subscriber/cp3.7-working-with-html-forms.md)

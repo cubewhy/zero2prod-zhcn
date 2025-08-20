@@ -52,7 +52,7 @@ cargo add reqwest --dev
 
 spawn_app 是唯一一个合理地依赖于我们应用程序代码的部分。
 
-其他所有内容都与底层实现细节完全解耦——如果明天我们决定放弃 Rust，用 Ruby on Rails 重写应用程序，我们仍然可以使用相同的测试套件来检查新堆栈中的回归问题，只要将 spawn_app 替换为合适的触发器（例如，使用 bash 命令启动 Rails 应用程序）。
+其他所有内容都与底层实现细节完全解耦——如果明天我们决定放弃 Rust，用 Ruby on Rails 重写应用程序，我们仍然可以使用相同的测试套件来检查新堆栈中的回归问题，只要将 spawn_app 替换为合适的触发器(例如，使用 bash 命令启动 Rails 应用程序)。
 
 该测试还涵盖了我们感兴趣的所有属性:
 
@@ -81,7 +81,7 @@ cargo test
 
 无论等待多久，测试执行都不会终止。这是怎么回事?
 
-在 zero2prod::run 中，我们调用（并等待）HttpServer::run。HttpServer::run 返回一个 Server 实例 - 当我们调用 .await 时，它会无限期地监听我们指定的地址：它会处理传入的请求，但永远不会自行关闭或“完成”。
+在 zero2prod::run 中，我们调用(并等待)HttpServer::run。HttpServer::run 返回一个 Server 实例 - 当我们调用 .await 时，它会无限期地监听我们指定的地址：它会处理传入的请求，但永远不会自行关闭或“完成”。
 
 这意味着 spawn_app 永远不会返回，我们的测试逻辑也永远不会执行。
 
@@ -89,7 +89,7 @@ cargo test
 
 [tokio::spawn](https://docs.rs/tokio/latest/tokio/fn.spawn.html) 在这里非常方便：tokio::spawn 接受一个 Future 并将其交给运行时进行轮询，
 
-而无需等待其完成；因此，它与下游 Future 和任务（例如我们的测试逻辑）并发运行。
+而无需等待其完成；因此，它与下游 Future 和任务(例如我们的测试逻辑)并发运行。
 
 让我们重构 zero2prod::run，使其返回一个 Server 实例而不等待它:
 
@@ -184,7 +184,7 @@ test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; fini
 
 `spawn_app` 总是会尝试在 8000 端口上运行我们的应用——这并不理想:
 
-- 如果 8000 端口正在被我们机器上的其他程序（例如我们自己的应用！）占用，测试就会失败；
+- 如果 8000 端口正在被我们机器上的其他程序(例如我们自己的应用！)占用，测试就会失败；
 - 如果我们尝试并行运行两个或多个测试，那么只有一个测试能够绑定端口，其他所有测试都会失败。
 
 我们可以做得更好: 测试应该在随机可用的端口上运行它们的后台应用。

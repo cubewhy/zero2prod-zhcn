@@ -142,7 +142,7 @@ App::new()
     .route("/{name}", web::get().to(greet))
 ```
 
-App 是builder模式的一个实际示例: `new()` 为我们提供了一个干净的平台，我们可以使用流畅的 API（即链式调用）一点一点地添加新的行为。
+App 是builder模式的一个实际示例: `new()` 为我们提供了一个干净的平台，我们可以使用流畅的 API(即链式调用)一点一点地添加新的行为。
 
 我们将在整本书中根据需要了解 App 的大部分 API 接口: 读完本书后，您应该至少接触过一次它的大多数方法。
 
@@ -169,7 +169,7 @@ App 是builder模式的一个实际示例: `new()` 为我们提供了一个干�
 `"/"` 将匹配所有在基本路径后不带任何段的请求，例如 `http://localhost:8000/`。
 `web::get()` 是 `Route::new().guard(guard::Get())` 的快捷方式，也就是说，当且仅当请求的 HTTP 方法是 GET 时，该请求才会传递给处理程序。
 
-您可以想象一下，当一个新请求到来时会发生什么：应用会遍历所有已注册的端点，直到找到一个匹配的端点（路径模板和保护条件都满足），然后将请求对象传递给处理程序。
+您可以想象一下，当一个新请求到来时会发生什么：应用会遍历所有已注册的端点，直到找到一个匹配的端点(路径模板和保护条件都满足)，然后将请求对象传递给处理程序。
 
 这并非 100% 准确，但目前来说，这是一个足够好的思维模型。
 
@@ -209,15 +209,15 @@ For more information about this error, try `rustc --explain E0752`.
 error: could not compile `zero2prod` (bin "zero2prod") due to 1 previous error
 ```
 
-我们需要 main 函数是异步的，因为 HttpServer::run 是一个异步方法，但 main 函数（我们二进制文件的入口点）不能是异步函数。为什么呢？
+我们需要 main 函数是异步的，因为 HttpServer::run 是一个异步方法，但 main 函数(我们二进制文件的入口点)不能是异步函数。为什么呢？
 
 Rust 中的异步编程建立在 [Future](https://doc.rust-lang.org/beta/std/future/trait.Future.html) trait 之上: Future 代表一个可能尚未到达的值。所有 Future 都公开一个 [poll](https://doc.rust-lang.org/beta/std/future/trait.Future.html#the-poll-method) 方法，必须调用该方法才能使 Future 继续执行并最终解析出最终值。你可以将 Rust 的 Future 视为惰性的：除非进行轮询，否则无法保证它们会执行完成。与其他语言采用的推送模型相比，这通常被描述为一种拉模型。
 
-Rust 的标准库在设计上不包含异步运行时：你应该将其作为依赖项引入你的项目，在 Cargo.toml 文件的 `[dependencies]` 下添加一个 crate。这种方法非常灵活：您可以自由地实现自己的运行时，并根据用例的特定需求进行优化（参见 [Fuchsia](http://smallcultfollowing.com/babysteps/blog/2019/12/09/async-interview-2-cramertj/#async-interview-2-cramertj) 项目或 [bastion](https://github.com/bastion-rs/bastion) 的 Actor 框架）。
+Rust 的标准库在设计上不包含异步运行时：你应该将其作为依赖项引入你的项目，在 Cargo.toml 文件的 `[dependencies]` 下添加一个 crate。这种方法非常灵活：您可以自由地实现自己的运行时，并根据用例的特定需求进行优化(参见 [Fuchsia](http://smallcultfollowing.com/babysteps/blog/2019/12/09/async-interview-2-cramertj/#async-interview-2-cramertj) 项目或 [bastion](https://github.com/bastion-rs/bastion) 的 Actor 框架)。
 
 这就解释了为什么 main 不能是异步函数：谁负责调用它的 poll 方法?
 
-没有特殊的配置语法来告诉 Rust 编译器你的依赖项之一是异步运行时（例如，我们对分配器所做的配置），而且，公平地说，甚至没有一个关于运行时的标准化定义（例如，Executor trait）。
+没有特殊的配置语法来告诉 Rust 编译器你的依赖项之一是异步运行时(例如，我们对分配器所做的配置)，而且，公平地说，甚至没有一个关于运行时的标准化定义(例如，Executor trait)。
 因此，你应该在 main 函数的顶部启动异步运行时，
 
 然后用它来驱动你的 Future 完成。
@@ -234,7 +234,7 @@ Rust 的标准库在设计上不包含异步运行时：你应该将其作为依
 cargo install cargo-expand
 ```
 
-Rust 宏在 token 级别运行：它们接收一个符号流（例如，在我们的例子中是整个 main 函数），并输出一个新符号流，然后将其传递给编译器。换句话说，Rust 宏的主要用途是**代码生成**。
+Rust 宏在 token 级别运行：它们接收一个符号流(例如，在我们的例子中是整个 main 函数)，并输出一个新符号流，然后将其传递给编译器。换句话说，Rust 宏的主要用途是**代码生成**。
 
 我们如何调试或检查特定宏的运行情况？您可以检查它输出的 token!
 
@@ -380,7 +380,7 @@ async fn main() -> std::io::Result<()> {
 
 你可能看到 `cargo check` 在抱怨变量 `req`没有用到
 
-我们的健康检查响应确实是静态的，并且不使用任何与传入 HTTP 请求捆绑的数据（路由除外）。我们可以遵循编译器的建议，在 req 前添加下划线......
+我们的健康检查响应确实是静态的，并且不使用任何与传入 HTTP 请求捆绑的数据(路由除外)。我们可以遵循编译器的建议，在 req 前添加下划线......
 或者，我们可以从 health_check 中完全删除该输入参数:
 
 ```rs

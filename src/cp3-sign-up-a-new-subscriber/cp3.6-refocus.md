@@ -2,7 +2,7 @@
 
 让我们稍事休息一下，回顾一下，我们已经完成了相当多的内容！
 
-我们着手实现一个 /health_check 端点，这让我们有机会进一步了解我们的 Web 框架 [actix-web](https://docs.rs/actix-web/latest/actix_web/index.html) 的基础知识，以及 Rust API 的（集成）测试基础知识。
+我们着手实现一个 /health_check 端点，这让我们有机会进一步了解我们的 Web 框架 [actix-web](https://docs.rs/actix-web/latest/actix_web/index.html) 的基础知识，以及 Rust API 的(集成)测试基础知识。
 
 现在是时候利用我们学到的知识，最终完成我们电子邮件通讯项目的第一个用户故事了:
 
@@ -16,11 +16,11 @@
 
 我们将深入研究：
 
-- 如何在 actix-web 中读取 HTML 表单中收集的数据（例如，如何解析 POST 请求体？）；
-- 哪些库可以在 Rust 中使用 PostgreSQL 数据库（diesel、sqlx 和 tokio-postgres）；
+- 如何在 actix-web 中读取 HTML 表单中收集的数据(例如，如何解析 POST 请求体？)；
+- 哪些库可以在 Rust 中使用 PostgreSQL 数据库(diesel、sqlx 和 tokio-postgres)；
 - 如何设置和管理数据库迁移；
 - 如何在 API 请求处理程序中获取数据库连接；
-- 如何在集成测试中测试副作用（即存储数据）；
+- 如何在集成测试中测试副作用(即存储数据)；
 - 如何避免在使用数据库时测试之间出现奇怪的交互。
 
 让我们开始吧！

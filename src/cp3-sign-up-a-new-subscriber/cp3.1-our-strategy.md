@@ -4,12 +4,12 @@
 
 - 选择一个 Web 框架并熟悉它；
 - 定义我们的测试策略；
-- 选择一个 crate 与我们的数据库交互（我们需要将这些电子邮件保存在某个地方！）；
-- 定义我们希望如何管理数据库模式随时间的变化（也就是迁移）；
+- 选择一个 crate 与我们的数据库交互(我们需要将这些电子邮件保存在某个地方！)；
+- 定义我们希望如何管理数据库模式随时间的变化(也就是迁移)；
 - 实际编写一些查询。
 
 这项工作非常繁重，如果一头扎进去可能会让人不知所措。
 
 我们将添加一个垫脚石，使整个过程更容易理解：在处理 /subscriptions 之前，我们将实现一个 /health_check 端点。虽然没有业务逻辑，但这是一个很好的机会，让我们熟悉我们的 Web 框架，并了解其所有不同的组成部分。
 
-我们将依靠我们的持续集成流水线来在整个过程中保持控制——如果您尚未设置它，请快速浏览 [第一章](/cp1-getting-started)（或获取一个[现成的模板](https://www.lpalmieri.com/posts/2020-06-06-zero-to-production-1-setup-toolchain-ides-ci/#5-2-ready-to-go-ci-pipelines)）。
+我们将依靠我们的持续集成流水线来在整个过程中保持控制——如果您尚未设置它，请快速浏览 [第一章](/cp1-getting-started)(或获取一个[现成的模板](https://www.lpalmieri.com/posts/2020-06-06-zero-to-production-1-setup-toolchain-ides-ci/#5-2-ready-to-go-ci-pipelines))。
