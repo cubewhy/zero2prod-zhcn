@@ -398,4 +398,177 @@ sqlx migrate add create_subscriptions_table
 
 我们需要在这里编写第一个迁移文件的 SQL 代码。
 
+让我们快速勾勒出我们需要的查询：
+
+```sql
+-- migrations/{timestamp}_create_subscriptions_table.sql
+-- Create Subscriptions Table
+CREATE TABLE subscriptions(
+  id uuid NOT NULL,
+  PRIMARY KEY (id),
+  email TEXT NOT NULL UNIQUE,
+  name TEXT NOT NULL,
+  subscribed_at timestamptz NOT NULL
+);
+```
+
+关于[主键](https://www.postgresql.org/docs/current/ddl-constraints.html#DDL-CONSTRAINTS-PRIMARY-KEYS)的[争论](https://www.mssqltips.com/sqlservertip/5431/surrogate-key-vs-natural-key-differences-and-when-to-use-in-sql-server/)一直存在：有些人喜欢使用具有业务含义的列（例如，电子邮件、自然键），而另一些人则觉得使用没有任何业务含义的合成键更安全（例如，ID、随机生成的 UUID、代理键）。
+
+除非有非常充分的理由，否则我通常默认使用合成标识符——如果您对此有不同意见，请随意。
+
+另外需要注意以下几点:
+
+- 我们使用 subscribed_at 来跟踪订阅的创建时间（timestamptz 是一种支持时区的日期和时间类型）
+- 我们使用 UNIQUE 约束在数据库级别强制确保电子邮件的唯一性
+- 我们强制所有字段的每一列都应使用 NOT NULL 约束进行填充
+- 我们使用 TEXT 格式来表示电子邮件和姓名，因为我们对它们的最大长度没有任何限制
+
+数据库约束是防止应用程序错误的最后一道防线，但它是有代价的——数据库必须确保所有检查都通过后才能将新数据写入表。因此，约束会影响我们的写入吞吐量，即单位时间内我们可以在表中插入/更新的行数。
+
+特别是 **UNIQUE** 约束，它会在我们的电子邮件列上引入一个额外的 BTree 索引：该索引必须在每次执行 **INSERT/UPDATE/DELETE** 查询时更新，而且会占用磁盘空间。
+
+就我们的具体情况而言，我不会太担心: 我们的邮件列表必须*非常受欢迎*，才会遇到写入吞吐量的问题。如果真的遇到这个问题，那绝对是个好事。
+
+### 运行迁移
+
+我们可以使用以下方法对数据库进行迁移:
+
+```shell
+sqlx migrate run
+```
+
+它的行为与 `sqlx database create` 相同——它会查看 `DATABASE_URL` 环境变量，以了解需要迁移的数据库。
+让我们将它添加到 `scripts/init_db.sh` 脚本中:
+
+```shell
+#!/usr/bin/env bash
+set -x
+set -eo pipefail
+
+if ! [ -x "$(command -v psql)" ]; then
+  echo >&2 "Error: psql is not installed."
+  exit 1
+fi
+
+if ! [ -x "$(command -v sqlx)" ]; then
+  echo >&2 "Error: sqlx is not installed."
+  echo >&2 "Use:"
+  echo >&2 "
+ cargo install --version=0.5.7 sqlx-cli --no-default-features --features postgres"
+echo >&2 "to install it."
+exit 1
+fi
+
+# Check if a custom user has been set, otherwise default to 'postgres'
+DB_USER=${POSTGRES_USER:=postgres}
+# Check if a custom password has been set, otherwise default to 'password'
+DB_PASSWORD="${POSTGRES_PASSWORD:=password}"
+# Check if a custom database name has been set, otherwise default to 'newsletter'
+DB_NAME="${POSTGRES_DB:=newsletter}"
+# Check if a custom port has been set, otherwise default to '5432'
+DB_PORT="${POSTGRES_PORT:=5432}"
+
+if [[ -z "${SKIP_DOCKER}" ]]
+then
+  # Launuh postgrecs sing Docker
+  docker run \
+    -e POSTGRES_USER=${DB_USER} \
+    -e POSTGRES_PASSWORD=${DB_PASSWORD} \
+    -e POSTGRES_DB=${DB_NAME} \
+    -p "${DB_PORT}":5432 \
+    -d postgres \
+    postgres -N 1000 
+  # ^ Increased maximum number of connections for testing purposes
+fi
+
+# Keep pinging Postgres until it's ready to accept commands
+export PGPASSWORD="${DB_PASSWORD}"
+until psql -h "localhost" -U "${DB_USER}" -p "${DB_PORT}" -d "postgres" -c '\q'; do
+  >&2 echo "Postgres is still unavailable - sleeping"
+  sleep 1
+done
+
+>&2 echo "Postgres is up and running on port ${DB_PORT}!"
+
+export DATABASE_URL=postgres://${DB_USER}:${DB_PASSWORD}@localhost:${DB_PORT}/${DB_NAME}
+sqlx database create
+sqlx migrate run
+```
+
+注意在这里我们进行了两处修改, 一处是文件末尾的 `sqlx migrate run` 另外一处是对 `SKIP_DOCKER` 环境变量的判断
+
+我们将 docker run 命令置于 SKIP_DOCKER 标志之后，以便轻松针对现有 Postgres 实例运行迁移，而无需手动将其关闭并使用 scripts/init_db.sh 重新创建。如果我们的脚本未启动 Postgres，此命令在 CI 中也非常有用。
+
+现在，我们可以使用以下命令迁移数据库
+
+```shell
+SKIP_DOCKER=true ./scripts/init_db.sh
+```
+
+您应该能够在输出中发现类似这样的内容
+
+```plaintext
++ sqlx migrate run
+```
+如果您使用您[最喜欢的 Postgres GUI](https://www.pgadmin.org/) 检查数据库，您现在会看到一个 `subscriptions` 表，旁边还有一个全新的 `_sqlx_migrations` 表: 这是 sqlx 跟踪针对您的数据库运行了哪些迁移的地方——现在它应该包含一行，用于记录我们的 `create_subscriptions_table` 迁移。
+
+## 编写我们的第一个查询
+
+我们已迁移并运行数据库。该如何与它通信?
+
+### Sqlx Feature Flags
+
+我们安装了 `sqlx-cli`，但实际上还没有将 **sqlx** 本身添加为我们应用程序的依赖项。
+
+我们在 `Cargo.toml` 中添加一行新代码:
+
+```toml
+[dependencies.sqlx]
+version = "0.8.6"
+default-features = false
+features = [
+    "runtime-actix-rustls",
+    "macros",
+    "postgres",
+    "uuid",
+    "chrono",
+    "migrate"
+]
+```
+
+是的，有很多功能开关。让我们逐一介绍一下：
+
+- `runtime-actix-rustls` 指示 sqlx 使用 actix 运行时作为其 Future，并使用 rustls 作为 TLS 后端；
+- `macros` 允许我们访问 sqlx::query! 和 sqlx::query_as!，我们将会广泛使用它们；
+- `postgres` 解锁 Postgres 特有的功能（例如非标准 SQL 类型）；
+- `uuid` 增加了将 SQL UUID 映射到 [uuid crate](https://docs.rs/uuid/) 中的 Uuid 类型的支持。我们需要它来处理我们的 id 列；
+- `chrono` 增加了将 SQL timestamptz 映射到 [chrono cratev](https://docs.rs/chrono/latest/chrono/) 中的 `DateTime<T>` 类型的支持。我们需要它来处理我们的 subscribed_at 列；
+- `migrate` 允许我们访问 **sqlx-cli** 后台用来管理迁移的相同函数。事实证明，它对我们的测试套件很有用。
+这些应该足够我们完成本章所需的工作了。
+
+### 配置管理
+
+连接到 Postgres 数据库最简单的入口点是 PgConnection。
+
+[PgConnection](https://docs.rs/sqlx/latest/sqlx/struct.PgConnection.html) 实现了 [Connection](https://docs.rs/sqlx/latest/sqlx/prelude/trait.Connection.html) trait，它为我们提供了一个 [connect](https://docs.rs/sqlx/latest/sqlx/prelude/trait.Connection.html#method.connect) 方法:
+它接受连接字符串作为输入，并异步返回一个 `Result<PostgresConnection,sqlx::Error>` 。
+
+我们从哪里获取连接字符串?
+
+我们可以在应用程序中硬编码一个连接字符串，然后将其用于测试。
+
+或者，我们可以选择立即引入一些基本的配置管理机制。
+
+这比听起来简单，而且可以节省我们在整个应用程序中追踪一堆硬编码值的成本。
+
+[config](https://docs.rs/config/latest/config/) crate 是 Rust 配置方面的“瑞士军刀”：它支持多种文件格式，并允许您分层组合不同的源（例如环境变量、配置文件等），从而轻松地根据每个部署环境定制应用程序的行为。
+
+我们暂时不需要任何花哨的东西: 一个配置文件就可以了。
+
+### 腾出空间
+
+目前，我们所有的应用程序代码都位于一个文件 lib.rs 中。
+
+为了避免在添加新功能时造成混乱，我们需要快速将其拆分成多个子模块。我们希望采用以下文件夹结构:
+
 TODO: WIP
