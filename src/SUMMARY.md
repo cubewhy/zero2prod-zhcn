@@ -25,3 +25,9 @@
   - [实现我们的第一个集成测试](cp3-sign-up-a-new-subscriber/cp3.5-implementing-our-first-integration-test.md)
   - [回顾](cp3-sign-up-a-new-subscriber/cp3.6-refocus.md)
   - [使用HTML表单](cp3-sign-up-a-new-subscriber/cp3.7-working-with-html-forms.md)
+
+- [部署到生产环境](cp5-going-live/README.md)
+  - [我们必须谈谈部署](cp5-going-live/cp5.1-we-must-talk-about-deployments.md)
+  - [选择我们的工具](cp5-going-live/cp5.2-choosing-our-tools.md)
+  - [我们项目的Dockerfile](cp5-going-live/cp5.3-a-dockerfile-for-our-application.md)
+  
