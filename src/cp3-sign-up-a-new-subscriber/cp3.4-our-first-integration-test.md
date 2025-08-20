@@ -176,7 +176,7 @@ error: could not compile `zero2prod` (test "health_check") due to 1 previous err
 //! main.rs
 use zero2prod::run;
 
-#[actix_web::main]
+#[tokio::main]
 async fn main() -> std::io::Result<()> {
     run().await
 }

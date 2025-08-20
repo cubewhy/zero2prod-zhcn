@@ -20,7 +20,7 @@ async fn greet(req: HttpRequest) -> impl Responder {
     format!("Hello {}!", &name)
 }
 
-#[actix_web::main]
+#[tokio::main]
 async fn main() -> std::io::Result<()> {
     HttpServer::new(|| {
         App::new()
@@ -100,7 +100,7 @@ curl http://127.0.0.1:8000
 
 // [...]
 
-#[actix_web::main]
+#[tokio::main]
 async fn main() -> std::io::Result<()> {
     HttpServer::new(|| {
         App::new()
@@ -293,7 +293,7 @@ async fn greet(req: HttpRequest) -> impl Responder {
     format!("Hello {}!", &name)
 }
 
-#[actix_web::main]
+#[tokio::main]
 async fn main() -> std::io::Result<()> {
     HttpServer::new(|| {
         App::new()
@@ -347,7 +347,7 @@ async fn health_check(req: HttpRequest) -> impl Responder {
 //! src/main.rs
 
 // [...]
-#[actix_web::main]
+#[tokio::main]
 async fn main() -> std::io::Result<()> {
     // [...]
     App::new()
@@ -366,7 +366,7 @@ async fn health_check(req: HttpRequest) -> impl Responder {
     HttpResponse::Ok()
 }
 
-#[actix_web::main]
+#[tokio::main]
 async fn main() -> std::io::Result<()> {
     HttpServer::new(|| {
         App::new()
