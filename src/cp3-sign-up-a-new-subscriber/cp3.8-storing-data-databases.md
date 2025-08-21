@@ -527,7 +527,7 @@ SKIP_DOCKER=true ./scripts/init_db.sh
 version = "0.8.6"
 default-features = false
 features = [
-    "runtime-actix-rustls",
+    "tls-rustls",
     "macros",
     "postgres",
     "uuid",
@@ -538,7 +538,7 @@ features = [
 
 是的，有很多功能开关。让我们逐一介绍一下：
 
-- `runtime-actix-rustls` 指示 sqlx 使用 actix 运行时作为其 Future，并使用 rustls 作为 TLS 后端；
+- `tls-rustls` 指示 sqlx 使用 actix 运行时作为其 Future，并使用 rustls 作为 TLS 后端；
 - `macros` 允许我们访问 sqlx::query! 和 sqlx::query_as!，我们将会广泛使用它们；
 - `postgres` 解锁 Postgres 特有的功能（例如非标准 SQL 类型）；
 - `uuid` 增加了将 SQL UUID 映射到 [uuid crate](https://docs.rs/uuid/) 中的 Uuid 类型的支持。我们需要它来处理我们的 id 列；
@@ -570,5 +570,166 @@ features = [
 目前，我们所有的应用程序代码都位于一个文件 lib.rs 中。
 
 为了避免在添加新功能时造成混乱，我们需要快速将其拆分成多个子模块。我们希望采用以下文件夹结构:
+
+```plaintext
+src/
+├── configuration.rs
+├── lib.rs
+├── main.rs
+├── routes
+│   ├── health_check.rs
+│   └── subscriptions.rs
+├── routes.rs
+└── startup.rs
+```
+
+`lib.rs` 看起来是这样
+
+```rs
+//! src/lib.rs
+pub mod configuration;
+pub mod routes;
+pub mod startup;
+```
+
+`startup.rs` 将包含我们的运行函数, `health_check` 函数存放在 `routes/health_check.rs` 中, `subscribe` 和 `FormData` 函数存放在 `routes/subscriptions.rs` 中,
+`configuration.rs` 初始为空。这两个处理程序都重新导出到 `routes.rs` 中：
+
+```rs
+//! /src/routes.rs
+mod health_check;
+mod subscriptions;
+
+pub use health_check::*;
+pub use subscriptions::*;
+```
+
+您可能需要添加一些 pub 可见性修饰符, 以及对 `main.rs` 和 `tests/health_check.rs` 中的 `use` 语句进行一些修正。
+
+请确保 `cargo test` 通过, 然后再继续下一步。
+
+### 读取配置文件
+
+要使用 `config` 管理配置，我们必须将应用程序设置表示为实现 `serde` 的 `Deserialize` trait 的 Rust 类型。
+
+让我们创建一个新的 `Settings` struct:
+
+```rs
+//! src/configuration.rs
+#[derive(serde::Deserialize)]
+pub struct Settings {}
+```
+
+目前我们有两组配置值:
+
+- 应用程序端口，actix-web 监听传入请求(目前在 main.rs 中硬编码为 8000)
+- 数据库连接参数
+
+让我们在“设置”中为每个配置值添加一个字段:
+
+我们需要在 `DatabaseSettings` 之上添加 `#[derive(serde::Deserialize)]`, 否则编译器会报错
+
+```plaintext
+error[E0277]: the trait bound `DatabaseSettings: configuration::_::_serde::Deserialize<'_>` is not satisfied
+    --> src/configuration.rs:3:19
+     |
+3    |     pub database: DatabaseSettings,
+     |                   ^^^^^^^^^^^^^^^^ the trait `configuration::_::_serde::Deserialize<'_>` is not implemented for `DatabaseSettings`
+     |
+```
+
+这是有道理的: 为了使整个类型可反序列化，类型中的所有字段都必须可反序列化。
+
+我们有配置类型了，接下来做什么?
+
+首先, 让我们使用以下命令将配置添加到依赖项中
+
+```shell
+cargo add config
+```
+
+我们想从名为 `configuration` 的配置文件中读取我们的应用程序设置:
+
+```rs
+pub fn get_configuration() -> Result<Settings, config::ConfigError> {
+    let settings = config::Config::builder()
+        // Add configuration values from a file named `configuration`.
+        // It will look for any top-level file with an extension
+        // that `config` knows how to parse: yaml, json, etc.
+        .add_source(config::File::with_name("configuration"))
+        .build()
+        .unwrap();
+
+    // Try to convert the configuration values it read into
+    // our Settings type
+    settings.try_deserialize()
+}
+```
+
+让我们修改 `main` 方法 以读取配置作为第一步:
+
+```rs
+//! src/main.rs
+use std::net::TcpListener;
+
+use zero2prod::{configuration::get_configuration, run};
+
+#[tokio::main]
+async fn main() -> std::io::Result<()> {
+    let configuration = get_configuration().expect("Failed to read config");
+    let address = format!("0.0.0.0:{}", configuration.application_port);
+    let listener = TcpListener::bind(address)?;
+
+    run(listener)?.await
+}
+```
+
+如果这时候尝试运行 `cargo run` 会崩溃
+
+```plaintext
+thread 'main' panicked at src/configuration.rs:20:10:
+called `Result::unwrap()` on an `Err` value: configuration file "configuration" not found
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+```
+
+让我们写一个配置文件来修复这个问题
+
+我们可以使用任何文件格式，只要 config crate 知道如何处理它: 我们将选择 YAML。
+
+```yaml
+# configuration.yaml
+application_port: 8000
+
+database:
+  host: "127.0.0.1"
+  port: 5432
+  username: "postgres"
+  password: "password"
+  database_name: "newsletter"
+```
+
+`cargo run` 现在应该可以顺利执行了。
+
+### 连接到 Postgres
+
+`PgConnection::connect` 需要单个连接字符串作为输入, 而 `DatabaseSettings` 则提供了对所有连接参数的精细访问。
+让我们添加一个便捷的 connection_string 方法来做到这一点:
+
+```rs
+//! src/configuration.rs
+// [...]
+impl DatabaseSettings {
+    pub fn connection_string(&self) -> String {
+        format!(
+            "postgres://{}:{}@{}:{}/{}",
+            self.username, self.password, self.host, self.port, self.database_name
+        )
+    }
+}
+```
+
+我们终于可以连接了!
+
+让我们调整一下正常情况下的测试:
 
 TODO: WIP
