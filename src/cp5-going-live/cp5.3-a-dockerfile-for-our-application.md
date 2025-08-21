@@ -78,3 +78,58 @@ COPY . /app
 Docker 不会允许你直接通过 `COPY` 去访问父目录，或任意指定主机上的其他路径。
 
 根据需求，你也可以使用其他路径，甚至是一个 URL (!) 作为构建上下文。
+
+## Sqlx 离线模式
+
+如果你很急，那么你可能已经运行了构建命令……但是你要意识到他是不能正常运行的。
+
+```txt
+# [...]
+Step 4/5 : RUN cargo build --release
+# [...]
+error: error communicating with the server:
+Cannot assign reguested address (os error 99)
+    --> src/routes/subscriptions.rs:35:5
+    |
+35  | /     sqlx: :query!(
+36  | |         r#"
+37  | |     INSERT INTO subscriptions (id, email, name, subscribed_at)
+38  | |     VALUES ($1，$2，$3，$4)
+...   |
+43  | |         Utc::now()
+44  | |     )
+    | |____-
+    |
+    = note: this error originates in a macro
+```
+
+### 发生了什么？
+
+`sqlx` 在构建时访问了我们的数据库来确保所有的查询可以被成功的执行。  
+当我们在docker运行`cargo build`时，显然的，sqlx无法通过.env文件中确定的DATABASE_URL环境变量建立到数据库的连接。
+
+### 如何解决？
+
+我们可以通过--network来在构建镜像时允许镜像去和本地主机运行的数据库通信。这是我们在CI管道中遵循的策略，因为我们无论如何都需要数据库来运行集成测试。  
+不幸的是，由于在不同的操作系统（例如MACOS）上实施Docker网络会大大损害我们的构建可重现性，这对Docker构建有些麻烦。  
+更好的选择是sqlx的离线模式。  
+让我们在Cargo.toml加入sqlx的离线模式feature：
+
+```toml
+#! Cargo.toml
+# [...]
+
+# 使用表状的toml语法来避免一些长行！、
+[dependencies.sqlx]
+version = "0.5.7"
+default-features = false
+features = [
+    "runtime-acitx-rustls",
+    "macros",
+    "postgres",
+    "uuid",
+    "chrono",
+    "migrate",
+    "offline"
+]
+```
