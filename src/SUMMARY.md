@@ -31,3 +31,4 @@
   - [小结](cp3-sign-up-a-new-subscriber/cp3.11-summary.md)
 
 - [遥测](cp4-telemetry/README.md)
+  - [未知的未知](cp4-telemetry/cp4.1-unknown-unknowns.md)
