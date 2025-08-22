@@ -29,3 +29,5 @@
   - [持久化新订阅者](cp3-sign-up-a-new-subscriber/cp3.9-persisting-a-new-subscriber.md)
   - [更新我们的测试](cp3-sign-up-a-new-subscriber/cp3.10-updating-our-tests.md)
   - [小结](cp3-sign-up-a-new-subscriber/cp3.11-summary.md)
+
+- [遥测](cp4-telemetry/README.md)
