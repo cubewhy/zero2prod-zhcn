@@ -32,3 +32,4 @@
 
 - [遥测](cp4-telemetry/README.md)
   - [未知的未知](cp4-telemetry/cp4.1-unknown-unknowns.md)
+  - [可观察性](cp4-telemetry/cp4.2-observability.md)
