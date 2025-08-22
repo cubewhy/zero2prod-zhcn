@@ -510,6 +510,7 @@ SKIP_DOCKER=true ./scripts/init_db.sh
 ```plaintext
 + sqlx migrate run
 ```
+
 如果您使用您[最喜欢的 Postgres GUI](https://www.pgadmin.org/) 检查数据库，您现在会看到一个 `subscriptions` 表，旁边还有一个全新的 `_sqlx_migrations` 表: 这是 sqlx 跟踪针对您的数据库运行了哪些迁移的地方——现在它应该包含一行，用于记录我们的 `create_subscriptions_table` 迁移。
 
 ## 编写我们的第一个查询
@@ -532,7 +533,8 @@ features = [
     "postgres",
     "uuid",
     "chrono",
-    "migrate"
+    "migrate",
+    "runtime-tokio"
 ]
 ```
 
@@ -732,4 +734,135 @@ impl DatabaseSettings {
 
 让我们调整一下正常情况下的测试:
 
-TODO: WIP
+```rs
+use sqlx::{Connection, PgConnection};
+use zero2prod::configuration::get_configuration;
+
+#[tokio::test]
+async fn subscribe_returns_a_200_for_valid_form_data() {
+    // Arrange
+    let app_address = spawn_app();
+    let configuration = get_configuration().expect("Failed to read configuration");
+    let connection_string = configuration.database.connection_string();
+    // The `Connection` trait MUST be in scope for us to invoke
+    // `PgConnection::connect` - it is not an inherent method of the struct!
+    let connection = PgConnection::connect(&connection_string)
+            .await
+            .expect("Failed to connect to Postgres.");
+
+    let client = reqwest::Client::new();
+    // Act
+    let body = "name=le%20guin&email=ursula_le_guin%40gmail.com";
+    let response = client
+        .post(&format!("{}/subscriptions", &app_address))
+        .header("Content-Type", "application/x-www-form-urlencoded")
+        .body(body)
+        .send()
+        .await
+        .expect("Failed to execute request.");
+
+    // Assert
+    assert_eq!(200, response.status().as_u16());
+}
+```
+
+而且... `cargo test` 通过了!
+
+我们刚刚确认, 测试结果显示我们能够成功连接到 Postgres!
+
+对于世界来说，这是一小步，而对于我们来说，却是一大步。
+
+### 我们的测试断言
+
+现在我们已经连接上了，终于可以编写测试断言了。
+
+我们之前 10 页一直梦想着这些断言。
+
+我们将使用 sqlx 的 query! 宏:
+
+```rs
+#[tokio::test]
+async fn subscribe_returns_a_200_for_valid_form_data() {
+    // [...]
+    // The connection has to be marked as mutable!
+    let mut connection = PgConnection::connect(&connection_string)
+            .await
+            .expect("Failed to connect to Postgres.");
+
+    // [...]
+
+    // Assert
+    assert_eq!(200, response.status().as_u16());
+
+    let saved = sqlx::query!("SELECT email, name FROM subscriptions",)
+        .fetch_one(&mut connection)
+        .await
+        .expect("Failed to fetch saved subscription.");
+
+    assert_eq!(saved.email, "ursula_le_guin@gmail.com");
+    assert_eq!(saved.name, "le guin");
+}
+```
+
+`saved` 的类型是什么? `query!` 宏返回一个匿名记录类型: 在编译时验证查询有效后，会生成一个结构体定义，其结果中的每个列都有一个成员 (例如, `email` 列对应的是 `saved.email`)。
+
+如果我们尝试运行 `cargo test`, 将会报错:
+
+```plaintext
+error: set `DATABASE_URL` to use query macros online, or run `cargo sqlx prepare` to update the query cache
+  --> tests/health_check.rs:52:17
+   |
+52 |     let saved = sqlx::query!("SELECT email, name FROM subscriptions",)
+   |                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: this error originates in the macro `$crate::sqlx_macros::expand_query` which comes from the expansion of the macro `sqlx::query` (in Nightly builds, run with -Z macro-backtrace for more inf
+o)
+
+error: could not compile `zero2prod` (test "health_check") due to 1 previous error
+```
+
+正如我们之前讨论过的，sqlx 在编译时会联系 Postgres 来检查查询是否格式正确。就像 `sqlx-cli` 命令一样，它依赖 `DATABASE_URL` 环境变量来获取数据库的地址。
+
+我们可以手动导出 `DATABASE_URL`, 但每次启动机器并开始处理这个项目时，都会遇到同样的问题。我们不妨参考 [sqlx 作者的建议](https://github.com/launchbadge/sqlx#compile-time-verification)——添加一个顶层 `.env` 文件。
+
+```properties
+DATABASE_URL="postgres://postgres:password@localhost:5432/newsletter"
+```
+
+**sqlx** 会从中读取 `DATABASE_URL`, 省去了我们每次都重新导出环境变量的麻烦。
+
+数据库连接参数放在两个地方 (`.env` 和
+`configuration.yaml`) 感觉有点麻烦，但这不是什么大问题: **configuration.yaml** 可以用来
+在应用程序编译后更改其运行时行为，而 **.env** 只与我们的开发流程、构建和测试步骤相关。
+
+将 .env 文件提交到版本控制——我们很快就会在持续集成 (CI) 中用到它!
+
+让我们再次尝试运行 `cargo test`:
+
+```plaintext
+running 3 tests
+test health_check_works ... ok
+test subscribe_returns_a_400_when_data_is_missing ... ok
+test subscribe_returns_a_200_for_valid_form_data ... FAILED
+
+failures:
+
+---- subscribe_returns_a_200_for_valid_form_data stdout ----
+
+thread 'subscribe_returns_a_200_for_valid_form_data' panicked at tests/health_check.rs:55:10:
+Failed to fetch saved subscription.: RowNotFound
+```
+
+它失败了，这正是我们想要的!
+
+现在我们可以专注于修补应用程序，让它恢复正常。
+
+### 更新 CI 流
+
+如果你检查一下，你会发现你的 CI 流现在无法执行我们在开始时引入的大多数检查。
+
+我们的测试现在依赖于正在运行的 Postgres 数据库才能正确执行。由于 `sqlx` 的编译时检查，我们所有的构建命令 (`cargo check`、`cargo lint`、`cargo build` )都需要一个正常运行的数据库!
+
+我们不想再冒险使用一个损坏的 CI。
+
+您可以在[这里](https://github.com/LukeMathWalker/zero-to-production/blob/root-chapter-03-part1/.github/workflows/general.yml)找到 GitHub Actions 设置的更新版本。只需更新 general.yml 文件即可。
