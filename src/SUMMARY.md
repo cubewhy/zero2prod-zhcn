@@ -35,3 +35,4 @@
   - [可观察性](cp4-telemetry/cp4.2-observability.md)
   - [日志记录](cp4-telemetry/cp4.3-logging.md)
   - [检测 POST /订阅](cp4-telemetry/cp4.4-instrumenting-post-subscriptions.md)
+  - [结构化日志](cp4-telemetry/cp4.5-structured-logging.md)
