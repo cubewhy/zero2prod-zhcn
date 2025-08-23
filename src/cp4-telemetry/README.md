@@ -15,3 +15,10 @@
 我们对此一无所知：应用程序尚未进行检测，我们也没有收集任何遥测数据，这让我们容易受到未知因素的影响。
 
 如果您对上一句话的大部分内容感到困惑，请不要担心：彻底弄清楚这个问题将是本章的重点。
+
+- [未知的未知](cp4.1-unknown-unknowns.md)
+- [可观察性](cp4.2-observability.md)
+- [日志记录](cp4.3-logging.md)
+- [检测 POST /订阅](cp4.4-instrumenting-post-subscriptions.md)
+- [结构化日志](cp4.5-structured-logging.md)
+- [小结](cp4.6-summary.md)
