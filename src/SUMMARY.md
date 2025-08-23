@@ -34,3 +34,4 @@
   - [未知的未知](cp4-telemetry/cp4.1-unknown-unknowns.md)
   - [可观察性](cp4-telemetry/cp4.2-observability.md)
   - [日志记录](cp4-telemetry/cp4.3-logging.md)
+  - [检测 POST /订阅](cp4-telemetry/cp4.4-instrumenting-post-subscriptions.md)
