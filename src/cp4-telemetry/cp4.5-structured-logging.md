@@ -523,4 +523,148 @@ zero2prod
 
 让我们从 main 函数开始:
 
-TODO: WIP
+```rs
+#[tokio::main]
+async fn main() -> std::io::Result<()> {
+    LogTracer::init().expect("Failed to set logger");
+
+    let env_filter = EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| EnvFilter::new("info"));
+    let formatting_layer = BunyanFormattingLayer::new(
+        "zero2prod".into(),
+        std::io::stdout
+    );
+
+    let subscriber = Registry::default()
+        .with(env_filter)
+        .with(JsonStorageLayer)
+        .with(formatting_layer);
+
+    set_global_default(subscriber).expect("Failed to set subscriber");
+
+    let configuration = get_configuration().expect("Failed to read config");
+    let connection_pool = PgPool::connect(&configuration.database.connection_string())
+        .await
+        .expect("Failed to connect to Postgres.");
+
+    let address = format!("0.0.0.0:{}", configuration.application_port);
+    let listener = TcpListener::bind(address)?;
+
+    run(listener, connection_pool)?.await
+}
+```
+
+现在主函数中有很多事情要做。
+
+我们来分解一下:
+
+```rs
+//! src/main.rs
+use std::net::TcpListener;
+
+use sqlx::PgPool;
+use tracing::{subscriber::set_global_default, Subscriber};
+use tracing_bunyan_formatter::{BunyanFormattingLayer, JsonStorageLayer};
+use tracing_log::LogTracer;
+use tracing_subscriber::{layer::SubscriberExt, EnvFilter, Registry};
+use zero2prod::{configuration::get_configuration, run};
+
+/// Compose multiple layers into a `tracing`'s subscriber.
+///
+/// # Implementation Notes
+///
+/// We are using `impl Subscriber` as return type to avoid having to
+/// spell out the actual type of the returned subscriber, which is
+/// indeed quite complex.
+/// We need to explicitly call out that the returned subscriber is
+/// `Send` and `Sync` to make it possible to pass it to `init_subscriber`
+/// later on.
+pub fn get_subscriber(
+    name: impl Into<String>,
+    env_filter: impl Into<String>,
+) -> impl Subscriber + Send + Sync {
+    let env_filter = EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| EnvFilter::new(env_filter.into()));
+    let formatting_layer = BunyanFormattingLayer::new(
+        name.into(),
+        std::io::stdout
+    );
+
+    Registry::default()
+        .with(env_filter)
+        .with(JsonStorageLayer)
+        .with(formatting_layer)
+}
+
+/// Register a subscriber as global default to process span data.
+///
+/// It should only be called once!
+pub fn init_subscriber(subscriber: impl Subscriber + Send + Sync) {
+    LogTracer::init().expect("Failed to set logger");
+
+    set_global_default(subscriber).expect("Failed to set subscriber");
+}
+
+#[tokio::main]
+async fn main() -> std::io::Result<()> {
+    let subscriber = get_subscriber("zero2prod", "into");
+    init_subscriber(subscriber);
+
+    // [...]
+}
+```
+
+我们现在可以将 get_subscriber 和 init_subscriber 移到 zero2prod 库中的一个模块中，叫做 `telemetry`。
+
+```rs
+//! src/lib.rs
+pub mod configuration;
+pub mod routes;
+pub mod startup;
+pub mod telemetry;
+```
+
+```rs
+//! src/telemetry.rs
+use tracing::{subscriber::set_global_default, Subscriber};
+use tracing_bunyan_formatter::{BunyanFormattingLayer, JsonStorageLayer};
+use tracing_log::LogTracer;
+use tracing_subscriber::{layer::SubscriberExt, EnvFilter, Registry};
+
+pub fn get_subscriber(
+    name: impl Into<String>,
+    env_filter: impl Into<String>,
+) -> impl Subscriber + Send + Sync {
+    // [...]
+}
+
+pub fn init_subscriber(subscriber: impl Subscriber + Send + Sync) {
+    // [...]
+}
+```
+
+然后在 `main.rs` 中删除 `get_subscriber` 和 `init_subscriber`, 随后导入我们在 `telemetry` 模块的两个方法
+
+```rs
+//! src/main.rs
+use zero2prod::telemetry::{get_subscriber, init_subscriber};
+
+// [...]
+```
+
+太棒了!
+
+## 集成测试的日志
+
+我们不仅仅是为了美观/可读性而进行清理——我们还将这两个函数移到了 zero2prod 库中，以便我们的测试套件可以使用它们!
+
+根据经验，我们在应用程序中使用的所有内容都应该反映在我们的集成测试中。
+
+尤其是结构化日志记录，当集成测试失败时，它可以显著加快我们的调试速度: 我们可能不需要附加调试器，日志通常可以告诉我们哪里出了问题。这也是一个很好的基准：如果你无法从日志中调试，想象一下在生产环境中调试会有多么困难!
+
+让我们修改我们的 `spawn_app` 辅助函数，让它负责初始化我们的 tracing 堆栈:
+
+```rs
+//! tests/health_check.rs
+// TODO: WIP
+```
