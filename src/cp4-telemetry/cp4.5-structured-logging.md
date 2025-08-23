@@ -361,8 +361,166 @@ cargo add tracing_bunyan_formatter
 
 ```rs
 //! src/main.rs
+use tracing::subscriber::set_global_default;
+use tracing_bunyan_formatter::{BunyanFormattingLayer, JsonStorageLayer};
+use tracing_subscriber::{layer::SubscriberExt, EnvFilter, Registry};
+
 // [...]
-// TODO: wip
+
+#[tokio::main]
+async fn main() -> std::io::Result<()> {
+    // We removed the `env_logger` line we had before!
+    
+    // We are falling back to printing all spans at into-level or above
+    // if the RUST_LOG environment variable has not been set.
+    let env_filter = EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| EnvFilter::new("info"));
+    let formatting_layer = BunyanFormattingLayer::new(
+        "zero2prod".into(),
+        std::io::stdout
+    );
+
+    // The `with` method is provided by `SubscriberExt`, an extension
+    // trait for `Subscriber` exposed by `tracing_subscriber`
+    let subscriber = Registry::default()
+        .with(env_filter)
+        .with(JsonStorageLayer)
+        .with(formatting_layer);
+
+    // `set_global_default` can be used by applications to specify
+    // what subscriber should be used to process spans
+    set_global_default(subscriber).expect("Failed to set subscriber");
+    // [...]
+}
 ```
+
+如果你使用 `cargo run` 启动应用程序并发出请求，你会看到这些日志（为了更容易阅读，这里格式化后打印）:
+
+```plaintext
+{
+  "msg": "[ADDING A NEW SUBSCRIBER - START]",
+  "subscriber_name": "le guin",
+  "request_id": "30f8cce1-f587-4104-92f2-5448e1cc21f6",
+  "subscriber_email": "ursula_le_guin@gmail.com"
+  ...
+}
+{
+  "msg": "[SAVING NEW SUBSCRIBER DETAILS IN THE DATABASE - START]",
+  "subscriber_name": "le guin",
+  "request_id": "30f8cce1-f587-4104-92f2-5448e1cc21f6",
+  "subscriber_email": "ursula_le_guin@gmail.com"
+  ...
+}
+{
+  "msg": "[SAVING NEW SUBSCRIBER DETAILS IN THE DATABASE - END]",
+  "elapsed_milliseconds": 4,
+  "subscriber_name": "le guin",
+  "request_id": "30f8cce1-f587-4104-92f2-5448e1cc21f6",
+  "subscriber_email": "ursula_le_guin@gmail.com"
+  ...
+}
+{
+  "msg": "[ADDING A NEW SUBSCRIBER - END]",
+  "elapsed_milliseconds": 5
+  "subscriber_name": "le guin",
+  "request_id": "30f8cce1-f587-4104-92f2-5448e1cc21f6",
+  "subscriber_email": "ursula_le_guin@gmail.com",
+  ...
+}
+```
+
+我们成功了：所有附加到原始上下文的内容都已传播到其所有子跨度。
+
+tracing-bunyan-formatter 还提供了开箱即用的持续时间：每次关闭跨度时，都会在控制台上打印一条 JSON 消息，并附加 elapsed_millisecond 属性。
+
+JSON 格式在搜索方面非常友好：像 ElasticSearch 这样的引擎可以轻松提取所有这些记录，推断出模式并索引 request_id、name 和 email 字段。它释放了查询引擎的全部功能来筛选我们的日志!
+
+这比我们以前的方法好得多：为了执行复杂的搜索，我们必须使用自定义的正则表达式，因此大大限制了我们可以轻松向日志提出的问题范围。
+
+## tracing-log
+
+如果你仔细观察，就会发现我们遗漏了一些东西：我们的终端只显示由应用程序直接发出的日志。actix-web 的日志记录怎么了?
+
+tracing 的日志功能标志确保每次发生跟踪事件时都会发出一条日志记录，从而允许 log 的记录器获取它们。
+反之则不然：log 本身并不提供跟踪事件的发送功能，也没有提供启用此功能的功能标志。
+
+如果需要，我们需要显式注册一个记录器实现，将日志重定向到我们的跟踪订阅者进行处理。
+
+我们可以使用 [tracing-log crate](https://docs.rs/tracing-log) 提供的 [LogTracer](https://docs.rs/tracing-log/latest/tracing_log/struct.LogTracer.html)。
+
+```shell
+cargo add tracing-log
+```
+
+让我们按需求修改 `main.rs`
+
+```rs
+//! src/main.rs
+// [...]
+#[tokio::main]
+async fn main() -> std::io::Result<()> {
+    // Redirect all `log`'s events to our subscriber
+    LogTracer::init().expect("Failed to set logger");
+
+    let env_filter = EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| EnvFilter::new("info"));
+    let formatting_layer = BunyanFormattingLayer::new(
+        "zero2prod".into(),
+        std::io::stdout
+    );
+
+    let subscriber = Registry::default()
+        .with(env_filter)
+        .with(JsonStorageLayer)
+        .with(formatting_layer);
+
+    set_global_default(subscriber).expect("Failed to set subscriber");
+    // [...]
+}
+```
+
+所有 actix-web 的日志应该再次在我们的控制台中输出。
+
+## 删除没有用到的依赖
+
+如果你快速浏览一下我们所有的文件，你会发现我们目前还没有在任何地方使用 log 或 env_logger。我们应该将它们从 Cargo.toml 文件中删除。
+
+在大型项目中，重构后很难发现某个依赖项已不再使用。
+
+幸运的是，工具再次派上用场——让我们安装 `cargo-udeps` (未使用的依赖项):
+
+```shell
+cargo install cargo-udeps
+```
+
+`cargo-udeps` 会扫描你的 Cargo.toml 文件，并检查 [dependencies] 下列出的所有 crate 是否已在项目中实际使用。查看 `cargo-deps` 的[“战利品陈列柜”](https://github.com/est31/cargo-udeps#trophy-case)，了解一系列热门 Rust 项目，这些项目都曾使用 `cargo-udeps` 识别未使用的依赖项并缩短构建时间。
+
+现在就在我们的项目上运行它吧!
+
+```shell
+# cargo-udeps requires the nightly compiler.
+# We add +nightly to our cargo invocation
+# to tell cargo explicitly what toolchain we want to use.
+cargo +nightly udeps
+```
+
+输出应该是
+
+```plaintext
+zero2prod
+  dependencies
+    "env-logger"
+```
+
+不幸的是，它没有识别到 `log`。
+让我们从 `Cargo.toml` 文件中删除这两项。
+
+## 清理初始化
+
+我们坚持不懈地努力改进应用程序的可观察性。
+
+现在，让我们回顾一下我们编写的代码，看看是否有任何有意义的改进空间。
+
+让我们从 main 函数开始:
 
 TODO: WIP
