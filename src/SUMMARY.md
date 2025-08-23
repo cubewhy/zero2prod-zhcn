@@ -25,6 +25,18 @@
   - [实现我们的第一个集成测试](cp3-sign-up-a-new-subscriber/cp3.5-implementing-our-first-integration-test.md)
   - [回顾](cp3-sign-up-a-new-subscriber/cp3.6-refocus.md)
   - [使用HTML表单](cp3-sign-up-a-new-subscriber/cp3.7-working-with-html-forms.md)
+  - [存储数据: 数据库](cp3-sign-up-a-new-subscriber/cp3.8-storing-data-databases.md)
+  - [持久化新订阅者](cp3-sign-up-a-new-subscriber/cp3.9-persisting-a-new-subscriber.md)
+  - [更新我们的测试](cp3-sign-up-a-new-subscriber/cp3.10-updating-our-tests.md)
+  - [小结](cp3-sign-up-a-new-subscriber/cp3.11-summary.md)
+
+- [遥测](cp4-telemetry/README.md)
+  - [未知的未知](cp4-telemetry/cp4.1-unknown-unknowns.md)
+  - [可观察性](cp4-telemetry/cp4.2-observability.md)
+  - [日志记录](cp4-telemetry/cp4.3-logging.md)
+  - [检测 POST /订阅](cp4-telemetry/cp4.4-instrumenting-post-subscriptions.md)
+  - [结构化日志](cp4-telemetry/cp4.5-structured-logging.md)
+  - [小结](cp4-telemetry/cp4.6-summary.md)
 
 - [部署到生产环境](cp5-going-live/README.md)
   - [我们必须谈谈部署](cp5-going-live/cp5.1-we-must-talk-about-deployments.md)
