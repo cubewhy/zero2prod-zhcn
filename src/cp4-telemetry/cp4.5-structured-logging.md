@@ -822,3 +822,330 @@ TEST_LOG=true cargo test health_check_works | bunyan
 并仔细检查输出以了解发生了什么。
 
 是不是很棒?
+
+## 清理仪表代码 - tracing::instrument
+
+我们重构了初始化逻辑。现在来看看我们的插桩代码。
+
+是时候再次回归 subscribe 了。
+
+```rs
+//! src/routes/subscriptions.rs
+// [...]
+pub async fn subscribe(form: web::Form<FormData>, pool: web::Data<PgPool>) -> HttpResponse {
+    let request_id = Uuid::new_v4();
+    let request_span = tracing::info_span!(
+        "Adding a new subscriber.",
+        %request_id,
+        subscriber_email = %form.email,
+        subscriber_name = %form.name,
+    );
+    let _request_span_guard = request_span.enter();
+
+    // We do not call `.enter` on query_span!
+    // `.instrument` takes care of it at the right moments
+    // in the query future lifetime
+    let query_span = tracing::info_span!("Saving new subscriber details in the database");
+
+    match sqlx::query!(
+        r#"
+        INSERT INTO subscriptions (id, email, name, subscribed_at)
+        VALUES ($1, $2, $3, $4)
+        "#,
+        Uuid::new_v4(),
+        form.email,
+        form.name,
+        Utc::now()
+    )
+    .execute(pool.get_ref())
+    // First we attach the instrumentation, then we `.await` it
+    .instrument(query_span)
+    .await
+    {
+        Ok(_) => {
+            tracing::info!("request_id {request_id} - New subscriber details have been saved");
+            HttpResponse::Ok().finish()
+        }
+        Err(e) => {
+            println!("request_id {request_id} - Failed to execute query: {e}");
+            HttpResponse::InternalServerError().finish()
+        }
+    }
+}
+```
+
+公平地说，日志记录给我们的订阅函数带来了一些噪音。
+
+让我们看看能否稍微减少一下。
+
+我们将从 `request_span` 开始: 我们希望订阅函数中的所有操作都在 `request_span` 的上下文中发生。
+换句话说，我们希望将订阅函数包装在一个 `span` 中。
+
+这种需求相当普遍: 将每个子任务提取到其各自的函数中是构建例程的常用方法，可以提高可读性并简化测试的编写；因此，我们经常会希望将 span 附加到函数声明中。
+
+`tracing` 通过其 `tracing::instrument` 过程宏来满足这种特定的用例。让我们看看它的实际效果:
+
+```rs
+//! src/rotues/subscriptions.rs
+// [...]
+#[tracing::instrument(
+    name = "Adding a new subscriber",
+    skip(form, pool),
+    fields(
+        request_id = %Uuid::new_v4(),
+        subscriber_email = %form.email,
+        subscriber_name = %form.name,
+    )
+)]
+pub async fn subscribe(form: web::Form<FormData>, pool: web::Data<PgPool>) -> HttpResponse {
+    let query_span = tracing::info_span!("Saving new subscriber details in the database");
+
+    match sqlx::query!(/* [...] */)
+    .execute(pool.get_ref())
+    .instrument(query_span)
+    .await
+    {
+        Ok(_) => {
+            HttpResponse::Ok().finish()
+        }
+        Err(e) => {
+            tracing::error!("Failed to execute query: {e}");
+            HttpResponse::InternalServerError().finish()
+        }
+    }
+}
+```
+
+`#[tracing::instrument]` 在函数调用开始时创建一个 span，并自动将传递给函数的所有参数附加到 span 的上下文中——在我们的例子中是 `form` 和 `pool`。函数参数通常不会显示在日志记录中（例如 `pool`），或者我们希望更明确地指定应该捕获哪些参数/如何捕获它们（例如，命名 form 的每个字段）——我们可以使用 `skip` 指令明确地告诉跟踪忽略它们。
+
+`name` 可用于指定与函数 `span` 关联的消息 - 如果省略，则默认为函数名称。
+
+我们还可以使用 fields 指令来丰富 span 的上下文。它利用了我们之前在 info_span! 宏中见过的相同语法。
+结果相当不错：所有插桩关注点在视觉上都被执行关注点分隔开来，
+
+前者由一个过程宏来处理，该宏“修饰”函数声明，而函数体则专注于实际的业务逻辑。
+
+需要指出的是，如果将 ``tracing::instrument`` 应用于异步函数，它也会小心地使用 `Instrument::instrument`。
+
+让我们将查询提取到其自己的函数中，并使用 `tracing::instrument` 来摆脱 query_span
+以及对 `.instrument` 方法的调用:
+
+```rs
+//! src/routes/subscription.rs
+// [...]
+
+#[tracing::instrument(
+    name = "Adding a new subscriber",
+    skip(form, pool),
+    fields(
+        request_id = %Uuid::new_v4(),
+        subscriber_email = %form.email,
+        subscriber_name = %form.name,
+    )
+)]
+pub async fn subscribe(form: web::Form<FormData>, pool: web::Data<PgPool>) -> HttpResponse {
+    match insert_subscriber(&pool, &form).await {
+        Ok(_) => HttpResponse::Ok().finish(),
+        Err(_) => HttpResponse::InternalServerError().finish(),
+    }
+}
+
+#[tracing::instrument(
+    name = "Saving new subscriber details in the database",
+    skip(form, pool)
+)]
+pub async fn insert_subscriber(pool: &PgPool, form: &FormData) -> Result<(), sqlx::Error> {
+    sqlx::query!(
+        r#"
+        INSERT INTO subscriptions (id, email, name, subscribed_at)
+        VALUES ($1, $2, $3, $4)
+        "#,
+        Uuid::new_v4(),
+        form.email,
+        form.name,
+        Utc::now()
+    )
+    .execute(pool)
+    .await
+    .inspect_err(|e| {
+        tracing::error!("Failed to execute query: {:?}", e);
+    })?;
+
+    Ok(())
+}
+```
+
+错误事件现在确实落在查询范围内，并且我们实现了更好的关注点分离：
+
+- insert_subscriber 负责数据库逻辑，它不感知周围的 Web 框架 - 也就是说，我们不会将 `web::Form` 或 `web::Data` 包装器作为输入类型传递
+- subscribe 通过调用所需的例程来协调要完成的工作，并根据 HTTP 协议的规则和约定将其结果转换为正确的响应
+
+我必须承认我对 `tracing::instrument` 的无限热爱: 它显著降低了检测代码所需的工作量。
+
+它会将你推向成功的深渊: 做正确的事是最容易的事。
+
+## 保护你的秘密 - secrecy
+
+`#[tracing::instrument]` 中其实有一个我不太喜欢的元素：它会自动将传递给函数的所有参数附加到 span 的上下文中——你必须选择不记录函数输入（通过 skip 选项），而不是选择加入。
+
+你肯定不希望日志中包含机密信息（例如密码）或个人身份信息（例如最终用户的账单地址）。
+
+选择退出是一个危险的默认设置——每次使用 `#[tracing::instrument]` 向函数添加新输入时，你都需要问自己: 记录这段输入安全吗? 我应该跳过它吗?
+
+如果时间过长，别人就会忘记——你现在要处理一个安全事件。
+
+你可以通过引入一个包装器类型来避免这种情况，该包装器类型明确标记哪些字段被视为敏感字段——`secrecy::Secret`。
+
+```shell
+cargo add secrecy --features=serde
+```
+
+我们来看看它的定义:
+
+```rs
+/// Wrapper type for values that contains secrets, which attempts to limit
+/// accidental exposure and ensure secrets are wiped from memory when dropped.
+/// (e.g. passwords, cryptographic keys, access tokens or other credentials)
+///
+/// Access to the secret inner value occurs through the [...]
+/// `expose_secret()` method [...]
+pub struct Secret<S>
+where
+    S: Zeroize,
+{
+    /// Inner secret value
+    inner_secret: S,
+}
+```
+
+Zeroize trait 提供的内存擦除功能非常实用。
+
+我们正在寻找的关键属性是 `SecretBox` 的屏蔽 `Debug` 实现: `println!("{:?}", my_secret_string)` 输出的是 Secret([REDACTED String]) 而不是实际的 secret 值。这正是我们防止敏感信息通过 `#[tracing::instrument]` 或其他日志语句意外泄露所需要的。
+
+显式包装器类型还有一个额外的好处: 它可以作为新开发人员的文档，帮助他们熟悉代码库。它明确了在你的领域/根据相关法规，哪些内容被视为敏感信息。
+
+现在我们唯一需要担心的秘密值是数据库密码。让我们写一下:
+
+```rs
+//! src/configuration.rs
+use secrecy::SecretBox;
+// [...]
+
+#[derive(serde::Deserialize)]
+pub struct DatabaseSettings {
+    // [...]
+    pub password: SecretBox<String>,
+}
+```
+
+`SecretBox` 不会干扰反序列化 - `SecretBox` 通过委托给包装类型的反序列化逻辑来实现 `serde::Deserialize`（如果您像我们一样启用了 serde 功能标志）。
+
+编译器不满意:
+
+```plaintext
+error[E0277]: `SecretBox<std::string::String>` doesn't implement `std::fmt::Display`
+  --> src/configuration.rs:22:28
+   |
+21 |             "postgres://{}:{}@{}:{}/{}",
+   |                            -- required by this formatting parameter
+22 |             self.username, self.password, self.host, self.port, self.database_name
+   |                            ^^^^^^^^^^^^^ `SecretBox<std::string::String>` cannot be formatted 
+with the default formatter
+   |
+   = help: the trait `std::fmt::Display` is not implemented for `SecretBox<std::string::String>`
+   = note: in format strings you may be able to use `{:?}` (or {:#?} for pretty-print) instead
+   = note: this error originates in the macro `$crate::__export::format_args` which comes from the 
+expansion of the macro `format` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0277]: `SecretBox<std::string::String>` doesn't implement `std::fmt::Display`
+  --> src/configuration.rs:29:28
+   |
+28 |             "postgres://{}:{}@{}:{}",
+   |                            -- required by this formatting parameter
+29 |             self.username, self.password, self.host, self.port
+   |                            ^^^^^^^^^^^^^ `SecretBox<std::string::String>` cannot be formatted 
+with the default formatter
+   |
+   = help: the trait `std::fmt::Display` is not implemented for `SecretBox<std::string::String>`
+   = note: in format strings you may be able to use `{:?}` (or {:#?} for pretty-print) instead
+   = note: this error originates in the macro `$crate::__export::format_args` which comes from the 
+expansion of the macro `format` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+For more information about this error, try `rustc --explain E0277`.
+error: could not compile `zero2prod` (lib) due to 2 previous errors
+```
+
+这是一项功能，而非 bug —— `secret::SecretBox` 没有实现 `Display` 接口，因此我们需要
+明确允许暴露已包装的 secret。编译器错误提示我们，
+由于整个数据库连接字符串嵌入了数据库密码，因此也应该将其标记为 `SecretBox`:
+
+```rs
+//! src/configuration.rs
+use secrecy::{ExposeSecret, SecretBox};
+// [...]
+
+impl DatabaseSettings {
+    pub fn connection_string(&self) -> SecretBox<String> {
+        SecretBox::new(Box::new(format!(
+            "postgres://{}:{}@{}:{}/{}",
+            self.username, self.password.expose_secret(), self.host, self.port, self.database_name
+        )))
+    }
+
+    pub fn connection_string_without_db(&self) -> SecretBox<String> {
+        SecretBox::new(Box::new(format!(
+            "postgres://{}:{}@{}:{}",
+            self.username, self.password.expose_secret(), self.host, self.port
+        )))
+    }
+}
+```
+
+```rs
+//! src/main.rs
+use secrecy::ExposeSecret;
+use sqlx::PgPool;
+use zero2prod::{configuration::get_configuration, run, telemetry::{get_subscriber, init_subscriber}};
+
+#[tokio::main]
+async fn main() -> std::io::Result<()> {
+    // [...]
+    let connection_pool = PgPool::connect(&configuration.database.connection_string().expose_secret())
+        .await
+        .expect("Failed to connect to Postgres.");
+
+    // [...]
+}
+```
+
+```rs
+//! tests/health_check.rs
+use secrecy::ExposeSecret;
+// [...]
+
+pub async fn configure_database(config: &DatabaseSettings) -> PgPool {
+    // Create database
+    let mut connection = PgConnection::connect(&config.connection_string_without_db().expose_secret())
+        .await
+        .expect("Failed to connect to Postgres");
+
+    connection
+        .execute(format!(r#"CREATE DATABASE "{}";"#, config.database_name).as_str())
+        .await
+        .expect("Failed to create database.");
+
+    // Migrate database
+    let connection_pool = PgPool::connect(&config.connection_string().expose_secret())
+        .await
+        .expect("Failed to connect to Postgres");
+
+    sqlx::migrate!("./migrations")
+        .run(&connection_pool)
+        .await
+        .expect("Failed to migrate the database");
+
+    connection_pool
+}
+```
+
+暂时就是这样——以后，一旦引入敏感值，我们将确保将其包装到 `SecretBox` 中。
