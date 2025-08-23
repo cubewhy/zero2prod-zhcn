@@ -666,5 +666,159 @@ use zero2prod::telemetry::{get_subscriber, init_subscriber};
 
 ```rs
 //! tests/health_check.rs
-// TODO: WIP
+use zero2prod::telemetry::{get_subscriber, init_subscriber};
+
+async fn spawn_app() -> TestApp {
+  let subscriber = get_subscriber("test", "debug");
+    init_subscriber(subscriber);
+    // [...]
+}
+
+// [...]
 ```
+
+如果您尝试运行 `cargo test`，您将会看到一次成功和一系列的测试失败:
+
+```plaintext
+test subscribe_returns_a_400_when_data_is_missing ... ok
+
+failures:
+
+---- subscribe_returns_a_200_for_valid_form_data stdout ----
+
+thread 'subscribe_returns_a_200_for_valid_form_data' panicked at zero
+2prod/src/telemetry.rs:27:23:
+Failed to set logger: SetLoggerError(())
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- health_check_works stdout ----
+
+thread 'health_check_works' panicked at zero2prod/src/telemetry.rs:27
+:23:
+Failed to set logger: SetLoggerError(())
+
+failures:
+    health_check_works
+    subscribe_returns_a_200_for_valid_form_data
+
+```
+
+init_subscriber 应该只调用一次，但我们所有的测试都在调用它。
+
+我们可以使用 once_cell 来解决这个问题
+
+```shell
+cargo add once_cell
+```
+
+```rs
+use once_cell::sync::Lazy;
+
+//! tests/health_check.rs
+// Ensure that the `tracing` stack is only initialised once using `once_cell`
+static TRACING: Lazy<()> = Lazy::new(|| {
+    let subscriber = get_subscriber("test", "debug");
+    init_subscriber(subscriber);
+});
+
+
+async fn spawn_app() -> TestApp {
+    // The first time `initialize` is invoked the code in `TRACING` is executed.
+    // All other invocations will instead skip execution.
+    Lazy::force(&TRACING);
+    
+    // [...]
+}
+```
+
+`cargo test` 现在通过了
+
+然而，输出非常嘈杂：每个测试用例都会输出多行日志。
+
+我们希望跟踪工具在每个测试中都能运行，但我们不想每次运行测试套件时都查看这些日志。
+
+`cargo test` 解决了 println/print 语句的相同问题。默认情况下，它会吞掉所有打印到控制台的内容。您可以使用 `cargo test ---nocapture` 明确选择查看这些打印语句。
+
+我们需要一个与跟踪工具等效的策略。
+
+让我们为 get_subscriber 添加一个新参数，以便自定义日志应该写入到哪个接收器:
+
+```rs
+pub fn get_subscriber<Sink>(
+    name: impl Into<String>,
+    env_filter: impl Into<String>,
+    sink: Sink
+) -> impl Subscriber + Send + Sync 
+    // This "weird" syntax is a higher-ranked trait bound (HRTB)
+    // It basically means that Sink implements the `MakeWriter`
+    // trait for all choices of the lifetime parameter `'a`
+    // Check out https://doc.rust-lang.org/nomicon/hrtb.html
+    // for more details.
+    where Sink: for<'a> MakeWriter<'a> + Send + Sync + 'static
+{
+    let env_filter = EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| EnvFilter::new(env_filter.into()));
+    let formatting_layer = BunyanFormattingLayer::new(
+        name.into(),
+        sink
+    );
+
+    Registry::default()
+        .with(env_filter)
+        .with(JsonStorageLayer)
+        .with(formatting_layer)
+}
+```
+
+我们可以调整 `main` 方法使用 `stdout`:
+
+```rs
+//! src/main.rs
+// [...]
+
+#[tokio::main]
+async fn main() {
+    let subscriber = get_subscriber("zero2prod", "into", std::io::stdout);
+    // [...]
+}
+```
+
+在我们的测试套件中，我们将根据环境变量 TEST_LOG 动态选择接收器。
+
+- 如果设置了 TEST_LOG，我们将使用 std::io::stdout
+- 如果未设置 TEST_LOG，我们将使用 std::io::sink 将所有日志发送到 void
+
+我们自己编写的 --nocapture flag 版本
+
+```rs
+//! tests/health_check.rs
+// [...]
+static TRACING: Lazy<()> = Lazy::new(|| {
+    let default_filter_level = "info";
+    let subscriber_name = "test";c
+
+    // We cannot assign the output of `get_subscriber` to a variable based on the value of `TEST_LOG`
+    // because the sink is part of the type returned by `get_subscriber`, therefore they are not the
+    // same type. We could work around it, but this is the most straight-forward way of moving forward.
+    if std::env::var("TEST_LOG").is_ok() {
+        let subscriber = get_subscriber(subscriber_name, default_filter_level, std::io::stdout);
+        init_subscriber(subscriber);
+    } else {
+        let subscriber = get_subscriber(subscriber_name, default_filter_level, std::io::sink);
+        init_subscriber(subscriber);
+    }
+});
+```
+
+当你想查看某个测试用例的所有日志来调试它时，你可以运行
+
+```shell
+# We are using the `bunyan` CLI to prettify the outputted logs
+# The original `bunyan` requires NPM, but you can install a Rust-port with
+# `cargo install bunyan`
+TEST_LOG=true cargo test health_check_works | bunyan
+```
+
+并仔细检查输出以了解发生了什么。
+
+是不是很棒?
