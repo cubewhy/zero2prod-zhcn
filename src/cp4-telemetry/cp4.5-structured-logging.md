@@ -1149,3 +1149,131 @@ pub async fn configure_database(config: &DatabaseSettings) -> PgPool {
 ```
 
 暂时就是这样——以后，一旦引入敏感值，我们将确保将其包装到 `SecretBox` 中。
+
+## 请求Id
+
+我们还有最后一项工作要做：确保特定请求的所有日志，特别是包含返回状态码的记录，都添加了 request_id 属性。怎么做呢?
+
+如果我们的目标是避免接触 actix_web::Logger，最简单的解决方案是添加另一个中间件,`RequestIdMiddleware`, 它负责:
+
+- 生成唯一的请求标识符
+- 创建一个新的 span，并将请求标识符作为上下文附加
+- 将其余的中间件链包装到新创建的 span 中
+
+不过，这样会留下很多问题: `actix_web::Logger` 无法像其他日志那样以相同的结构化 JSON 格式让我们访问其丰富的信息（状态码、处理时间、调用者 IP 等）——我们必须从其消息字符串中解析出所有这些信息。
+
+在这种情况下，我们最好引入一个支持跟踪的解决方案。
+
+让我们将 `tracing-actix-web` 添加为依赖项之一
+
+```shell
+cargo add tracing-actix-web
+```
+
+```rs
+//! src/startup.rs
+use std::net::TcpListener;
+
+use actix_web::{dev::Server, web, App, HttpServer};
+use sqlx::PgPool;
+use tracing_actix_web::TracingLogger;
+
+use crate::routes::{health_check, subscribe};
+
+pub fn run(
+    listener: TcpListener,
+    db_pool: PgPool,
+) -> Result<Server, std::io::Error> {
+    let db_pool = web::Data::new(db_pool);
+
+    let server = HttpServer::new(move || {
+        App::new()
+            // Instead of `Logger::default`
+            .wrap(TracingLogger::default())
+            .route("/health_check", web::get().to(health_check))
+            .route("/subscriptions", web::post().to(subscribe))
+            .app_data(db_pool.clone())
+    })
+    .listen(listener)?
+    .run();
+
+    Ok(server)
+}
+```
+
+如果您启动应用程序并发出请求，您应该会在所有日志中看到 `request_id` 以及 `request_path` 和其他一些有用的信息。
+
+我们快完成了——还有一个未解决的问题需要解决。
+
+让我们仔细看看 POST /subscriptions 请求发出的日志记录:
+
+```plaintext
+{
+  "msg": "[REQUEST - START]",
+  "request_id": "21fec996-ace2-4000-b301-263e319a04c5",
+  ...
+}
+{
+  "msg": "[ADDING A NEW SUBSCRIBER - START]",
+  "request_id":"aaccef45-5a13-4693-9a69-5",
+  ...
+}
+```
+
+同一个请求却有两个不同的 request_id!
+
+这个 bug 可以追溯到我们 `subscribe` 函数中的 `#[tracing::instrument]` 注解:
+
+```rs
+//! src/routes/subscriptions.rs
+// [...]
+
+#[tracing::instrument(
+    name = "Adding a new subscriber",
+    skip(form, pool),
+    fields(
+        request_id = %Uuid::new_v4(),
+        subscriber_email = %form.email,
+        subscriber_name = %form.name,
+    )
+)]
+pub async fn subscribe(form: web::Form<FormData>, pool: web::Data<PgPool>) -> HttpResponse {
+    // [...]
+}
+```
+
+我们仍在函数级别生成一个 request_id，它会覆盖来自 TracingLogger 的 request_id。
+
+让我们摆脱它来解决这个问题:
+
+```rs
+//! src/routes/subscriptions.rs
+// [...]
+
+#[tracing::instrument(
+    name = "Adding a new subscriber",
+    skip(form, pool),
+    fields(
+        subscriber_email = %form.email,
+        subscriber_name = %form.name,
+    )
+)]
+pub async fn subscribe(form: web::Form<FormData>, pool: web::Data<PgPool>) -> HttpResponse {
+    // [...]
+}
+```
+
+现在一切都很好 - 我们应用程序的每个端点都有一个一致的 request_id。
+
+## 利用 tracing 生态系统
+
+我们介绍了 tracing 的诸多功能——它显著提升了我们收集的遥测数据的质量，并提高了插桩代码的清晰度。
+
+与此同时，我们几乎没有触及整个 tracing 生态系统在订阅层方面的丰富性。
+
+以下列举一些现成的组件:
+
+- tracing-actix-web 与 OpenTelemetry 兼容。如果您插入 [tracing-opentelemetry](https://docs.rs/tracing-opentelemetry)，则可以将 span 发送到与 [OpenTelemetry](https://opentelemetry.io/) 兼容的服务（例如 Jaeger 或 Honeycomb.io）进行进一步分析；
+- [tracing-error](https://docs.rs/tracing-error/) 使用 [SpanTrace](https://docs.rs/tracing-error/latest/tracing_error/struct.SpanTrace.html) 丰富了我们的错误类型，从而简化了故障排除。
+
+毫不夸张地说，tracing 是 Rust 生态系统的基础 crate。虽然日志是最小公分母，但 tracing 现已成为整个诊断和插桩生态系统的现代支柱。
