@@ -43,3 +43,6 @@
   - [选择我们的工具](cp5-going-live/cp5.2-choosing-our-tools.md)
   - [我们项目的Dockerfile](cp5-going-live/cp5.3-a-dockerfile-for-our-application.md)
   - [部署到 DigitalOcean Apps Platform](cp5-going-live/cp5.4-deploy-to-digitalocean-apps-platform.md)
+
+- [拒绝无效订阅者 第一部分](cp6-reject-invalid-subscribers-1/README.md)
+
