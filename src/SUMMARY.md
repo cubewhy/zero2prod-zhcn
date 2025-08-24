@@ -48,3 +48,4 @@
   - [需求](cp6-reject-invalid-subscribers-1/cp6.1-requirements.md)
   - [第一个实现](cp6-reject-invalid-subscribers-1/cp6.2-first-implementation.md)
   - [验证就像一口漏水的大锅](cp6-reject-invalid-subscribers-1/cp6.3-validation-is-a-leaky-cauldron.md)
+  - [类型驱动开发](cp6-reject-invalid-subscribers-1/cp6.4-type-driven-development.md)
