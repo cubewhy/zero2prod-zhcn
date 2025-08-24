@@ -607,7 +607,7 @@ pub fn init_subscriber(subscriber: impl Subscriber + Send + Sync) {
 
 #[tokio::main]
 async fn main() -> std::io::Result<()> {
-    let subscriber = get_subscriber("zero2prod", "into");
+    let subscriber = get_subscriber("zero2prod", "info");
     init_subscriber(subscriber);
 
     // [...]
@@ -778,7 +778,7 @@ pub fn get_subscriber<Sink>(
 
 #[tokio::main]
 async fn main() {
-    let subscriber = get_subscriber("zero2prod", "into", std::io::stdout);
+    let subscriber = get_subscriber("zero2prod", "info", std::io::stdout);
     // [...]
 }
 ```
