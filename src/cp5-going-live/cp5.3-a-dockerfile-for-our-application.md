@@ -596,3 +596,54 @@ curl -v http://127.0.0.1:8080/health_check
 ```
 
 太棒了, 这能用!
+
+## 数据库连接
+
+那么 POST /subscriptions 怎么样?
+
+```shell
+curl --request POST \
+  --data 'name=le%20guin&email=ursula_le_guin%40gmail.com' \
+  127.0.0.1:8000/subscriptions --verbose
+```
+
+经过长时间的等待, 服务端返回了 500!
+
+我们看看应用程序日志 (很有用的, 难道不是吗?)
+
+```json
+{
+  "msg": "[SAVING NEW SUBSCRIBER DETAILS IN THE DATABASE - EVENT] \
+Failed to execute query: PoolTimedOut",
+}
+```
+
+这应该不会让你感到意外——我们将 connect 替换成了 connect_lazy，以避免立即与数据库打交道。
+
+我们等了半分钟才看到返回 500 错误——这是因为 sqlx 中从连接池获取连接的默认超时时间为 30 秒。
+
+让我们使用更短的超时时间，让失败速度更快一些:
+
+```rs
+//! src/main.rs
+// [...]
+
+#[tokio::main]
+async fn main() -> std::io::Result<()> {
+    // [...]
+    let connection_pool = PgPoolOptions::new()
+        .acquire_timeout(std::time::Duration::from_secs(2))
+        .connect_lazy(&configuration.database.connection_string().expose_secret())
+        .expect("Failed to connect to Postgres.");
+
+    // [...]
+}
+```
+
+使用 Docker 容器获取有效的本地设置有多种方法:
+
+- 使用 --network=host 运行应用程序容器，就像我们目前对 Postgres 容器所做的那样；
+- 使用 docker-compose；
+- 创建用户自定义网络。
+
+有效的本地设置并不能让我们在部署到 Digital Ocean 时获得有效的数据库连接。因此，我们暂时先这样。
