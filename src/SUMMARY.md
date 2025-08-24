@@ -42,4 +42,4 @@
   - [我们必须谈谈部署](cp5-going-live/cp5.1-we-must-talk-about-deployments.md)
   - [选择我们的工具](cp5-going-live/cp5.2-choosing-our-tools.md)
   - [我们项目的Dockerfile](cp5-going-live/cp5.3-a-dockerfile-for-our-application.md)
-  
+  - [部署到 DigitalOcean Apps Platform](cp5-going-live/cp5.4-deploy-to-digitalocean-apps-platform.md)
