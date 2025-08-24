@@ -647,3 +647,260 @@ async fn main() -> std::io::Result<()> {
 - 创建用户自定义网络。
 
 有效的本地设置并不能让我们在部署到 Digital Ocean 时获得有效的数据库连接。因此，我们暂时先这样。
+
+## 优化 Docker 映像
+
+就我们的 Docker 镜像而言，它似乎按预期运行了——是时候部署它了!
+
+嗯，还没有。
+
+我们可以对 Dockerfile 进行两项优化，以简化后续工作:
+
+- 减小镜像大小，提高使用速度
+- 使用 Docker 层缓存，提高构建速度。
+
+### Docker 映像大小
+
+我们不会在托管我们应用程序的机器上运行 `docker build`。它们将使用 `docker pull` 下载我们的 Docker 镜像，而无需经历从头构建的过程。
+
+这非常方便：构建镜像可能需要很长时间（Rust 确实如此！），而我们只需支付一次费用。
+
+要实际使用镜像，我们只需支付下载费用，该费用与镜像的大小直接相关。
+
+我们的镜像有多大?
+
+我们可以使用
+
+```shell
+docker images zero2prod
+```
+
+```plaintext
+REPOSITORY   TAG       IMAGE ID       CREATED         SIZE
+zero2prod    latest    01f54e7e0153   8 minutes ago   16.5GB
+```
+
+这是大还是小?
+
+嗯，我们的最终镜像不能小于我们用作基础镜像的 rust。它有多大?
+
+```shell
+docker images rust:1.89.0
+```
+
+注: 译者这里懒得 docker pull 了, 反正这个映像很大就是了
+
+好的，我们的最终镜像几乎是基础镜像的两倍大。
+我们可以做得更好!
+
+我们的第一步是通过排除构建镜像不需要的文件来减小 Docker 构建上下文的大小。
+
+Docker 会在我们的项目中查找一个特定的文件 - `.dockerignore` 来确定哪些文件应该被忽略。
+
+让我们在根目录中创建一个包含以下内容的文件:
+
+```ignore
+#! .dockerignore
+.env
+target/
+tests/
+Dockerfile
+scripts/
+migrations/
+```
+
+所有符合 `.dockerignore` 中指定模式的文件都不会被 Docker 作为构建上下文的一部分发送到镜像，这意味着它们不在 COPY 指令的范围内。
+
+如果我们能够忽略繁重的目录（例如 Rust 项目的目标文件夹），这将大大加快我们的构建速度（并减小最终镜像的大小）。
+
+而下一个优化则利用了 Rust 的独特优势之一。
+
+Rust 的二进制文件是静态链接的——我们不需要保留源代码或中间编译工件来运行二进制文件，它是完全独立的。
+
+这与 Docker 的一项实用功能——多阶段构建完美兼容。我们可以将构建分为两个阶段:
+
+- `builder` 阶段，用于生成编译后的二进制文件
+- `runtime` 阶段，用于运行二进制文件
+
+修改后的 Dockerfile 如下所示:
+
+```Dockerfile
+# Builder stage
+FROM rust:1.89.0 AS builder
+
+WORKDIR /app
+
+RUN apt update && apt install lld clang -y
+COPY . .
+ENV SQLX_OFFLINE=true
+RUN cargo build --release
+
+# Runtime stage
+FROM rust:1.89.0
+
+WORKDIR /app
+
+# Copy the compiled binary from the builder environment
+# to your runtime env
+COPY --from=builder /app/target/release/zero2prod zero2prod
+
+# We need the configuration file at runtime!
+COPY configuration configuration
+
+ENV APP_ENVIRONMENT=production
+ENTRYPOINT ["./target/release/zero2prod"]
+```
+
+`runtime` 是我们的最终镜像。
+
+`builder` 阶段不会影响其大小——它是一个中间步骤，会在构建结束时被丢弃。最终工件中唯一存在的构建器阶段部分就是我们明确复制的内容——编译后的二进制文件!
+
+使用上述 Dockerfile 生成的镜像大小是多少?
+
+```shell
+docker images zero2prod
+```
+
+只有1.3GB!
+
+只比基础镜像大 20 MB，好太多了!
+
+我们可以更进一步：在运行时阶段，我们不再使用 `rust:1.89.0`，而是改用 `rust:1.589.0-slim`，这是一个使用相同底层操作系统的较小镜像。
+
+这比我们一开始的体积小了 4 倍——一点也不差!
+
+我们可以通过减少整个 Rust 工具链和机器（例如 rustc、cargo 等）的重量来进一步缩小体积——运行我们的二进制文件时，这些都不再需要。
+
+我们可以使用裸操作系统 (`debian:bullseye-slim`) 作为运行时阶段的基础镜像:
+
+```Dockerfile
+# [...]
+# Runtime stage
+FROM debian:bullseye-slim
+
+WORKDIR /app
+
+RUN apt-get update -y \
+  && apt-get install -y
+  --no-install-recommends openssl
+  ca-certificates \
+  # Clean up
+  && apt-get autoremove -y \
+  && apt-get clean -y \
+  && rm -rf /var/lib/apt/lists/*
+
+# Copy the compiled binary from the builder environment
+# to your runtime env
+COPY --from=builder /app/target/release/zero2prod zero2prod
+
+# We need the configuration file at runtime!
+COPY configuration configuration
+
+ENV APP_ENVIRONMENT=production
+ENTRYPOINT ["./target/release/zero2prod"]
+```
+
+不到 100 MB——比我们最初的尝试小了约 25 倍。
+
+我们可以通过使用 rust:1.89.0-alpine 来进一步减小文件大小，但我们必须交叉编译到 `linux-musl` 目标——目前超出了我们的范围。如果您有兴趣生成微型 Docker 镜像，请查看 rust-musl-builder。
+
+进一步减小二进制文件大小的另一种方法是从中剥离符号——您可以在不到 100 MB——比我们最初的尝试小了约 25 倍 42。
+我们可以通过使用 rust:1.59.0-alpine 来进一步减小文件大小，但我们必须交叉编译到
+linux-musl 目标——目前超出了我们的范围。如果您有兴趣生成微型 Docker 镜像，请查看 [rust-musl-builder](https://github.com/emk/rust-musl-builder)。
+进一步减小二进制文件大小的另一种方法是从中剥离符号——您可以在此处找到
+更多信息。找到更多信息。
+
+## 为Rust Docker 构建缓存
+
+Rust 在运行时表现出色，始终提供卓越的性能，但这也带来了一些代价：编译时间。在 Rust 年度调查中，Rust 项目面临的最大挑战或问题中，编译时间一直是热门话题。
+
+优化构建（--release）尤其令人头疼——对于包含多个依赖项的中型项目，编译时间可能长达 15/20 分钟。这在我们这样的 Web 开发项目中相当常见，因为我们会从异步生态系统（tokio、actix-web、sqlx 等）中引入许多基础 crate。
+
+不幸的是，我们在 Dockerfile 中使用 --release 选项来在生产环境中获得最佳性能。如何缓解这个问题？
+我们可以利用 Docker 的另一个特性：层缓存。
+
+Dockerfile 中的每个 RUN、COPY 和 ADD 指令都会创建一个层：执行指定命令后，先前状态（上一层）与当前状态之间的差异。
+
+层会被缓存：如果操作的起始点（例如基础镜像）未发生变化，并且命令本身（例如 COPY 复制的文件的校验和）也未发生变化，Docker 不会执行任何计算，而是直接从本地缓存中获取结果副本。
+
+Docker 层缓存速度很快，可以利用它来大幅提升 Docker 构建速度。
+
+诀窍在于优化 Dockerfile 中的操作顺序：任何引用经常更改的文件（例如源代码）的操作都应尽可能晚地出现，从而最大限度地提高前一步保持不变的可能性，并允许 Docker 直接从缓存中获取结果。
+
+开销最大的步骤通常是编译。
+
+大多数编程语言都遵循相同的策略：首先复制某种类型的锁文件，构建依赖项，然后复制其余源代码，最后构建项目。
+只要你的依赖关系树在两次构建之间没有发生变化，这就能保证大部分工作都被缓存。
+
+例如，在一个 Python 项目中，你可能会有类似这样的代码:
+
+```Dockerfile
+FROM python:3
+COPY requirements.txt
+RUN pip install -r requirements.txt
+COPY src/ /app
+WORKDIR /app
+ENTRYPOINT ["python", "app"]
+```
+
+遗憾的是, `cargo` 没有提供从其 `Cargo.lock` 文件开始构建项目依赖项的机制（例如 `cargo build --only-deps`）。
+
+然而，我们可以依靠社区项目 [`cargo-chef`](https://github.com/LukeMathWalker/cargo-chef) 来扩展 `cargo` 的默认功能。
+
+让我们按照 `cargo-chef` 的 README 中的建议修改 Dockerfile:
+
+注: 不要在构建容器外运行 cargo chef, 防止损坏代码库。 (来自README)
+
+```Dockerfile
+FROM lukemathwalker/cargo-chef:latest-rust-1.89.0 AS chef
+
+WORKDIR /app
+RUN apt update && apt install lld clang -y
+
+FROM chef AS planner
+COPY . .
+
+# Compute a lock-like file for our project
+RUN cargo chef prepare --recipe-path recipe.json
+
+FROM chef AS builder
+COPY --from=planner /app/recipe.json recipe.json
+# Build our project dependencies, not our application!
+RUN cargo chef cook --release --recipe-path recipe.json
+
+# Up to this point, if our dependency tree stays the same,
+# all layers should be cached.
+COPY . .
+
+ENV SQLX_OFFLINE=true
+RUN cargo build --release
+
+# Runtime stage
+FROM debian:bullseye-slim
+
+WORKDIR /app
+
+RUN apt-get update -y \
+  && apt-get install -y --no-install-recommends openssl ca-certificates \
+  # Clean up
+  && apt-get autoremove -y \
+  && apt-get clean -y \
+  && rm -rf /var/lib/apt/lists/*
+
+# Copy the compiled binary from the builder environment
+# to your runtime env
+COPY --from=builder /app/target/release/zero2prod zero2prod
+
+# We need the configuration file at runtime!
+COPY configuration configuration
+
+ENV APP_ENVIRONMENT=production
+ENTRYPOINT ["./target/release/zero2prod"]
+```
+
+我们使用三个阶段：第一阶段计算配方文件，第二阶段缓存依赖项，然后构建二进制文件，第三阶段是运行时环境。只要依赖项保持不变，`recipe.json` 文件就会保持不变，因此 `cargo chef cook --release --recipe-path recipe.json` 的结果会被缓存，从而大大加快构建速度。
+
+我们利用了 Docker 层缓存与多阶段构建的交互方式：`planner` 阶段中的 `COPY . .` 语句会使 `planner` 容器的缓存失效，但只要 `cargo chef prepare` 返回的 `recipe.json` 的校验和保持不变, 它就不会使构建器容器的缓存失效。
+
+您可以将每个阶段视为具有各自缓存的 Docker 镜像 - 它们仅在使用 `COPY --from` 语句时才会相互交互。
+这将在下一节中为我们节省大量时间。
