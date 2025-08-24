@@ -45,4 +45,4 @@
   - [部署到 DigitalOcean Apps Platform](cp5-going-live/cp5.4-deploy-to-digitalocean-apps-platform.md)
 
 - [拒绝无效订阅者 第一部分](cp6-reject-invalid-subscribers-1/README.md)
-
+  - [需求](cp6-reject-invalid-subscribers-1/cp6.1-requirements.md)
