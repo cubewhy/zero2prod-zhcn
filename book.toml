@@ -1,6 +1,9 @@
 [book]
-authors = ["cubewhy"]
+authors = ["Luca Palmieri", "cubewhy"]
 language = "zhcn"
 src = "src"
 title = "在Rust中从零到生产 简体中文版"
 
+[output.html]
+git-repository-url = "https://github.com/cubewhy/zero2prod-zhcn/tree/main"
+edit-url-template = "https://github.com/cubewhy/zero2prod-zhcn/edit/main/{path}"
