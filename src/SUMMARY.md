@@ -50,3 +50,4 @@
   - [验证就像一口漏水的大锅](cp6-reject-invalid-subscribers-1/cp6.3-validation-is-a-leaky-cauldron.md)
   - [类型驱动开发](cp6-reject-invalid-subscribers-1/cp6.4-type-driven-development.md)
   - [所有权与不变量](cp6-reject-invalid-subscribers-1/cp6.5-ownership-meets-invariants.md)
+  - [Panics](cp6-reject-invalid-subscribers-1/cp6.6-panics.md)
