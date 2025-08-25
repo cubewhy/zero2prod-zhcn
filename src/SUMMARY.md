@@ -62,3 +62,4 @@
 
 - [拒绝无效订阅者 第二部分](cp7-reject-invalid-subscribers-2/README.md)
   - [确认邮件](cp7-reject-invalid-subscribers-2/cp7.1-confirmation-emails.md)
+  - [EmailClient - 我们的的电子邮件传递组件](cp7-reject-invalid-subscribers-2/cp7.2-email-client-our-email-delivery-component.md)
