@@ -58,3 +58,4 @@
   - [电子邮件格式](cp6-reject-invalid-subscribers-1/cp6.11-the-email-format.md)
   - [基于属性的测试](cp6-reject-invalid-subscribers-1/cp6.13-property-based-testing.md)
   - [Payload 验证](cp6-reject-invalid-subscribers-1/cp6.14-payload-validation.md)
+  - [小结](cp6-reject-invalid-subscribers-1/cp6.15-summary.md)
