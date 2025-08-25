@@ -20,8 +20,8 @@ Result 用作易出错操作的返回类型: 如果操作成功，则返回 `Ok(
 // [...]
 
 pub async fn insert_subscriber(
-pool: &PgPool,
-new_subscriber: &NewSubscriber,
+    pool: &PgPool,
+    new_subscriber: &NewSubscriber,
 ) -> Result<(), sqlx::Error> {
     // [...]
 }
