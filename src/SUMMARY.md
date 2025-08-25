@@ -61,3 +61,4 @@
   - [小结](cp6-reject-invalid-subscribers-1/cp6.15-summary.md)
 
 - [拒绝无效订阅者 第二部分](cp7-reject-invalid-subscribers-2/README.md)
+  - [确认邮件](cp7-reject-invalid-subscribers-2/cp7.1-confirmation-emails.md)
