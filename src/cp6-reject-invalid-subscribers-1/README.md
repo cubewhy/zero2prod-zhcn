@@ -57,3 +57,18 @@ async fn subscribe_returns_a_200_when_fields_are_present_but_empty() {
 订阅新闻通讯时，我们需要提供两项信息：姓名和电子邮件地址。
 
 本章将重点介绍名称验证: 我们应该注意什么?
+
+- [需求](cp6.1-requirements.md)
+- [第一个实现](cp6.2-first-implementation.md)
+- [验证就像一口漏水的大锅](cp6.3-validation-is-a-leaky-cauldron.md)
+- [类型驱动开发](cp6.4-type-driven-development.md)
+- [所有权与不变量](cp6.5-ownership-meets-invariants.md)
+- [Panics](cp6.6-panics.md)
+- [将错误作为值 - Result](cp6.7-error-as-values-result.md)
+- [深刻的断言错误: claim](cp6.8-insightful-assertion-errors-claim.md)
+- [单元测试](cp6.9-unit-tests.md)
+- [处理 Result](cp6.10-handling-a-result.md)
+- [电子邮件格式](cp6.11-the-email-format.md)
+- [基于属性的测试](cp6.13-property-based-testing.md)
+- [Payload 验证](cp6.14-payload-validation.md)
+- [小结](cp6.15-summary.md)
