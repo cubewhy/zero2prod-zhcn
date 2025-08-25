@@ -54,3 +54,4 @@
   - [将错误作为值 - Result](cp6-reject-invalid-subscribers-1/cp6.7-error-as-values-result.md)
   - [深刻的断言错误: claim](cp6-reject-invalid-subscribers-1/cp6.8-insightful-assertion-errors-claim.md)
   - [单元测试](cp6-reject-invalid-subscribers-1/cp6.9-unit-tests.md)
+  - [处理 Result](cp6-reject-invalid-subscribers-1/cp6.10-handling-a-result.md)
