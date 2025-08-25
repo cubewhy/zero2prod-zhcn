@@ -59,3 +59,5 @@
   - [基于属性的测试](cp6-reject-invalid-subscribers-1/cp6.13-property-based-testing.md)
   - [Payload 验证](cp6-reject-invalid-subscribers-1/cp6.14-payload-validation.md)
   - [小结](cp6-reject-invalid-subscribers-1/cp6.15-summary.md)
+
+- [拒绝无效订阅者 第二部分](cp7-reject-invalid-subscribers-2/README.md)
