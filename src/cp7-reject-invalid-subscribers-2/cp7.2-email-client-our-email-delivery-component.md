@@ -547,7 +547,47 @@ cargo add wiremock --dev
 //! src/email_client.rs
 // [...]
 
-// TODO: wip
+#[cfg(test)]
+mod tests {
+    use fake::{faker::{internet::en::SafeEmail, lorem::en::Sentence}, Fake};
+    use wiremock::{matchers::any, Mock, MockServer, ResponseTemplate};
+
+    use crate::{domain::SubscriberEmail, email_client::EmailClient};
+
+    #[tokio::test]
+    async fn send_email_fires_a_request_to_base_url() {
+        // Arrange
+        let mock_server = MockServer::start().await;
+        let sender = SubscriberEmail::parse(SafeEmail().fake()).unwrap();
+        let email_client = EmailClient::new(mock_server.uri(), sender);
+
+        Mock::given(any())
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let subscriber_email = SubscriberEmail::parse(SafeEmail().fake()).unwrap();
+
+        let subject: String = Sentence(1..2).fake();
+        let content: String = Sentence(1..10).fake();
+
+        // Act
+        let _ = email_client
+            .send_email(subscriber_email, &subject, &content, &content)
+            .await;
+
+        // Assert
+    }
+}
 ```
 
-TODO: wip
+让我们一步一步分析一下正在发生的事情。
+
+```rs
+let mock_server = MockServer::start().await;
+```
+
+### wiremock::MockServer
+
+TODO: WIP
