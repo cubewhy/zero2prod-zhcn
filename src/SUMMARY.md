@@ -56,3 +56,4 @@
   - [单元测试](cp6-reject-invalid-subscribers-1/cp6.9-unit-tests.md)
   - [处理 Result](cp6-reject-invalid-subscribers-1/cp6.10-handling-a-result.md)
   - [电子邮件格式](cp6-reject-invalid-subscribers-1/cp6.11-the-email-format.md)
+  - [基于属性的测试](cp6-reject-invalid-subscribers-1/cp6.13-property-based-testing.md)
