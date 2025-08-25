@@ -51,3 +51,4 @@
   - [类型驱动开发](cp6-reject-invalid-subscribers-1/cp6.4-type-driven-development.md)
   - [所有权与不变量](cp6-reject-invalid-subscribers-1/cp6.5-ownership-meets-invariants.md)
   - [Panics](cp6-reject-invalid-subscribers-1/cp6.6-panics.md)
+  - [将错误作为值 - Result](cp6-reject-invalid-subscribers-1/cp6.7-error-as-values-result.md)
