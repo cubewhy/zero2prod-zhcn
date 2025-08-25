@@ -11,7 +11,7 @@
 - H，介于 0 到 23 之间（含）
 - M，介于 0 到 59 之间（含）
 - S，介于 0 到 59 之间（含）
-- 
+
 并验证 H:M:S 始终能够被正确解析。
 
 基于属性的测试显著扩大了我们验证的输入范围，从而增强了我们对代码正确性的信心，但它并不能证明我们的解析器是正确的——它并没有彻底探索输入空间（除了微小的输入空间）。
@@ -63,3 +63,46 @@ Rust 生态系统中有两种主流的基于属性的测试方案: [quickcheck](
 它们的领域有所重叠，但各自在各自的领域中都独树一帜——请查看它们的 README 文件，了解所有细节。
 
 对于我们的项目，我们将使用 **quickcheck** ——它入门相当简单，而且不使用太多宏，从而带来愉悦的 IDE 体验。
+
+## quickcheck 入门
+
+让我们看一下其中一个例子来了解它的工作原理:
+
+```rs
+/// This function we want to test
+fn reverse<T: Clone>(xs: &[T]) -> Vec<T> {
+    let mut rev = vec![];
+    for x in xs.iter() {
+        rev.insert(0, x.clone());
+    }
+    rev
+}
+
+#[cfg(test)]
+mod tests {
+    #[quickcheck_macros::quickcheck]
+    fn prop(xs: Vec<u32>) -> bool {
+        /// A property that is always true, regardless
+        /// of the vector we are applying the function to:
+        /// reversing it twice should return the original input.
+        xs == reverse(&reverse(&xs))
+    }
+}
+```
+
+`quickcheck` 在一个可配置迭代次数（默认为 100）的循环中调用 prop: 每次迭代时，它会生成一个新的 `Vec<u32>` 并检查 prop 是否返回 `true`。
+
+如果 prop 返回 `false`，它会尝试将生成的输入压缩为尽可能小的失败样本（最短的失败向量），以帮助我们调试哪里出了问题。
+
+在我们的例子中，我们希望实现如下代码:
+
+```rs
+#[quickcheck_macros::quickcheck]
+fn valid_emails_are_parsed_successfully(valid_email: String) -> bool {
+    SubscriberEmail::parse(valid_email).is_ok()
+}
+```
+
+不幸的是，如果我们要求输入字符串类型，我们将会得到各种各样的垃圾数据，从而导致验证失败。
+
+我们如何定制生成程序?
