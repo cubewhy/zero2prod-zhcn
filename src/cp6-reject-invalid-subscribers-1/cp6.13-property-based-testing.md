@@ -106,3 +106,90 @@ fn valid_emails_are_parsed_successfully(valid_email: String) -> bool {
 不幸的是，如果我们要求输入字符串类型，我们将会得到各种各样的垃圾数据，从而导致验证失败。
 
 我们如何定制生成程序?
+
+## 实现 Arbitrary Trait
+
+让我们回到前面的例子——quickcheck 是如何知道生成 `Vec<u32>` 的？一切都建立在 `quickcheck` 的 [`Arbitrary`](https://docs.rs/quickcheck/latest/quickcheck/trait.Arbitrary.html) trait之上:
+
+```rs
+pub trait Arbitrary: Clone + 'static {
+    // Required method
+    fn arbitrary(g: &mut Gen) -> Self;
+
+    // Provided method
+    fn shrink(&self) -> Box<dyn Iterator<Item = Self>> { ... }
+}
+```
+
+我们有两个方法：
+
+- arbitrary：给定一个随机源 (g)，返回该类型的一个实例；
+- shrink：返回一个逐渐“缩小”的该类型实例序列，以帮助 quickcheck
+
+找到最小的可能失败情况。
+
+`Vec<u32>` 实现了 Arbitrary 接口，因此 quickcheck 知道如何生成随机的 u32 向量。
+
+我们需要创建自己的类型，我们称之为 ValidEmailFixture，并为其实现 Arbitrary 接口。
+
+如果你查看 `Arbitrary` 的特征定义，你会注意到 shrinking 是可选的：有一个默认的实现（使用 `empty_shrinker`），它会导致 `quickcheck` 输出遇到的第一个失败，而不会尝试使其变得更小或更优。因此，我们只需要为我们的 `ValidEmailFixture` 提供一个 `Arbitrary::arbitrary` 的实现。
+
+让我们将 `quickcheck` 和 `quickcheck-macros` 都添加为开发依赖项:
+
+```shell
+cargo add quickcheck quickcheck-macros --dev
+```
+
+然后
+
+```rs
+//! src/domain/subscriber_email.rs
+// [...]
+#[cfg(test)]
+mod tests {
+    use claim::assert_err;
+    use fake::locales::{self, Data};
+
+    use crate::domain::SubscriberEmail;
+
+    // Both `Clone` and `Debug are required by `quickcheck`
+    #[derive(Debug, Clone)]
+    struct ValidEmailFixture(pub String);
+
+    impl quickcheck::Arbitrary for ValidEmailFixture {
+        fn arbitrary(g: &mut quickcheck::Gen) -> Self {
+            let username = g
+                .choose(locales::EN::NAME_FIRST_NAME)
+                .unwrap()
+                .to_lowercase();
+            let domain = g.choose(&["com", "net", "org"]).unwrap();
+            let email = format!("{username}@example.{domain}");
+            Self(email)
+        }
+    }
+
+    // ...
+}
+```
+
+这是一个令人惊叹的例子，它展现了通过在 Rust 生态系统中共享关键特性而获得的互操作性。
+
+我们如何让 fake 和 quickcheck 完美地协同工作?
+
+在 Arbitrary::arbitrary 中，我们以 g 作为输入，它是一个 G 类型的参数。
+
+G 受特性边界 G: quickcheck::Gen 的约束，因此它必须实现 quickcheck 中的 Gen 特性，
+
+其中 Gen 代表“生成器”。
+
+注: 等等...你注意到了吗? 在新的 quickcheck crate 中 Gen不再是trait, 而是一个 struct, 前面这一段代码是我自己(译者)的解决方案, 并非原作, 解决方案来自 [这个 GitHub issue](https://github.com/BurntSushi/quickcheck/issues/320)
+
+两个 crate 的维护者可能彼此了解，也可能不了解，但 rand-core 中一套社区认可的 trait 为我们提供了轻松的互操作性。太棒了!
+
+现在您可以运行 cargo test domain 了——结果应该会是绿色，这再次证明了我们的邮箱验证机制
+并没有过于死板。
+
+如果您想查看生成的随机输入，请在测试中添加 `dbg!(&valid_email.0);`
+
+语句，然后运行 `​​cargo test valid_emails -- --nocapture` ——数十个有效的邮箱地址
+应该会弹出到您的终端中!
