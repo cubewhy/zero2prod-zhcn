@@ -590,4 +590,878 @@ let mock_server = MockServer::start().await;
 
 ### wiremock::MockServer
 
-TODO: WIP
+[wiremock::MockServer](https://docs.rs/wiremock/latest/wiremock/struct.MockServer.html) 是一个功能齐全的 HTTP 服务器。
+
+[MockServer::start](https://docs.rs/wiremock/latest/wiremock/struct.MockServer.html#method.start) 会向操作系统请求一个随机可用端口，并在后台线程中启动服务器，准备监听传入的请求。
+
+如何将电子邮件客户端指向模拟服务器？我们可以使用 [`MockServer::uri`](https://docs.rs/wiremock/latest/wiremock/struct.MockServer.html#method.uri) 方法获取模拟服务器的地址；然后将其作为 base_url 传递给 `EmailClient::new`: `let email_client = EmailClient::new(mock_server.uri(), sender);`
+
+### wiremock::Mock
+
+开箱即用，`wiremock::MockServer` 会向所有传入请求返回 404 Not Found。
+
+我们可以通过挂载 Mock 来指示模拟服务器执行不同的操作。
+
+```rs
+Mock::given(any())
+    .respond_with(ResponseTemplate::new(200))
+    .expect(1)
+    .mount(&mock_server)
+    .await;
+```
+
+当 `wiremock::MockServer` 收到请求时，它会遍历所有已挂载的模拟，检查请求是否符合它们的条件。
+
+模拟的匹配条件使用 [`Mock::given`](https://docs.rs/wiremock/latest/wiremock/struct.Mock.html#method.given) 指定。
+
+我们将 `any()` 传递给 `Mock::Given`，根据 wiremock 的文档，
+
+> 匹配所有传入请求，无论其方法、路径、标头或正文如何。您可以使用它来验证请求是否已向服务器发出，而无需对其进行任何其他断言。
+
+基本上，无论请求是什么，它总是匹配的——这正是我们想要的!
+
+当传入的请求符​​合已挂载模拟的条件时，`wiremock::MockServer` 将按照 `respond_with` 中指定的内容返回响应。
+
+我们传递了 `ResponseTemplate::new(200)` - 一个没有正文的 **200 OK** 响应。
+
+`wiremock::Mock` 只有在挂载到 `wiremock::Mockserver` 后才会生效——这就是我们调用 `Mock::mount` 的原因。
+
+### 测试的目的应该明确
+
+然后我们实际调用了 `EmailClient::send_email`:
+
+```rs
+let subscriber_email = SubscriberEmail::parse(SafeEmail().fake()).unwrap();
+let subject: String = Sentence(1..2).fake();
+let content: String = Paragraph(1..10).fake();
+
+// Act
+let _ = email_client
+    .send_email(subscriber_email, &subject, &content, &content)
+    .await;
+```
+
+你会注意到，我们在这里严重依赖 fake: 我们为 send_email（以及上一节中的 sender）的所有输入生成随机数据。
+
+我们本来可以直接硬编码一堆值，为什么我们要一路硬编码，把它们都变成随机的呢?
+
+读者只需浏览一下测试代码，就应该能够轻松识别我们要测试的属性。
+
+使用随机数据传达了一个特定的信息：不要关注这些输入，它们的值不会影响测试结果，这就是它们随机的原因!
+
+相反，硬编码值应该总是让你犹豫：将 `subscriber_email` 设置为 `marco@gmail.com` 是否重要？如果我将其设置为其他值，测试应该通过吗?
+
+在我们这样的测试中，答案显而易见。但在更复杂的设置中，答案通常并非如此。
+
+### 模拟期望
+
+测试的结尾看起来有点神秘：有一个 // Assert
+注释……但后面没有断言。
+
+让我们回到 Mock 设置那一行:
+
+```rs
+Mock::given(any())
+    .respond_with(ResponseTemplate::new(200))
+    .expect(1)
+    .mount(&mock_server)
+    .await;
+```
+
+`.expect(1)` 的作用是什么?
+它为我们的模拟设置了一个期望: 我们告诉模拟服务器，在本次测试中，它应该接收恰好一个符合此模拟设置条件的请求。
+
+我们也可以使用范围来设置期望——例如，expect(1..) 表示我们希望至少接收一个请求；expect(1..=3) 表示我们希望接收至少一个请求，但不超过三个请求，等等。
+
+当 MockServer 超出范围时，会验证期望——确实，是在测试函数的末尾!
+
+在关闭之前，MockServer 会迭代所有已挂载的模拟，并检查它们的期望是否已验证。如果验证步骤失败，则会触发 panic（并导致测试失败）。
+
+让我们运行 `cargo test`:
+
+```plaintext
+---- email_client::tests::send_email_fires_a_request_to_base_url stdout ----
+
+thread 'email_client::tests::send_email_fires_a_request_to_base_url' panicked at
+ src/email_client.rs:27:9:
+not yet implemented
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+```
+
+好的，我们甚至还没有结束测试，因为我们有一个占位符 `todo!()` 作为 send_e`mail 的主体。
+
+让我们用一个虚拟的 `Ok` 来替换它:
+
+```rs
+//! src/email_client.rs
+// [...]
+
+impl EmailClient {
+    // [...]
+
+    pub async fn send_email(
+        &self,
+        recipient: SubscriberEmail,
+        subject: &str,
+        html_content: &str,
+        text_content: &str,
+    ) -> Result<(), String> {
+        // No matter the input
+        Ok(())
+    }
+}
+```
+
+如果我们再次运行 `cargo test`, 我们将看到 wiremock 的运行情况:
+
+```plaintext
+---- email_client::tests::send_email_fires_a_request_to_base_url stdout ----
+
+thread 'email_client::tests::send_email_fires_a_request_to_base_url' panicked at
+ /home/cubewhy/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/wiremock-0.6
+.5/src/mock_server/exposed_server.rs:367:17:
+Verifications failed:
+- Mock #0.
+        Expected range of matching incoming requests: == 1
+        Number of matched incoming requests: 0
+
+The server did not receive any request.
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    email_client::tests::send_email_fires_a_request_to_base_url
+```
+
+服务器预期收到一个请求，但实际上没有收到，因此测试失败。
+
+现在是时候完善 `EmailClient::send_email` 了。
+
+## EmailClient::send_email 的第一个草图
+
+要实现 `EmailClient::send_email`, 我们需要查看 Postmark 的 [API 文档](https://postmarkapp.com/developer/user-guide/send-email-with-api#send-a-single-email)。
+
+让我们从他们的[“发送单封邮件”用户指南](https://postmarkapp.com/developer/user-guide/send-email-with-api#send-a-single-email)开始。
+
+他们的邮件发送示例如下:
+
+```shell
+curl "https://api.postmarkapp.com/email" \
+  -X POST \
+  -H "Accept: application/json" \
+  -H "Content-Type: application/json" \
+  -H "X-Postmark-Server-Token: server token" \
+  -d '{
+  "From": "sender@example.com",
+  "To": "receiver@example.com",
+  "Subject": "Postmark test",
+  "TextBody": "Hello dear Postmark user.",
+  "HtmlBody": "<html><body><strong>Hello</strong> dear Postmark user.</body></html>",
+  "MessageStream": "outbound"
+}'
+```
+
+让我们分解一下 - 要发送电子邮件，我们需要:
+
+- 向 /email 端点发送一个 POST 请求
+- 一个 JSON 主体，其中包含与 `send_email` 参数紧密映射的字段。我们需要谨慎使用字段名称，必须使用 Pascal-case
+- 一个授权标头 `X-Postmark-Server-Token`，其值设置为一个我们可以从其门户网站检索的秘密令牌
+
+如果请求成功，我们会收到类似如下的返回信息:
+
+```plaintext
+HTTP/1.1 200 OK
+Content-Type: application/json
+
+{
+    "To": "receiver@example.com",
+    "SubmittedAt": "2021-01-12T07:25:01.4178645-05:00",
+    "MessageID": "0a129aee-e1cd-480d-b08d-4f48548ff48d",
+    "ErrorCode": 0,
+    "Message": "OK"
+}
+```
+
+我们有足够的资源来实现happy path！
+
+### reqwest::Client::post
+
+`reqwest::Client` 公开了一个 `post` 方法 - 它接受我们想要通过 POST 请求调用的 URL 作为参数，并返回一个 [RequestBuilder](https://docs.rs/reqwest/latest/reqwest/struct.RequestBuilder.html)。
+
+[RequestBuilder](https://docs.rs/reqwest/latest/reqwest/struct.RequestBuilder.html) 为我们提供了一个流畅的 API，让我们可以逐步构建我们想要发送的其余请求。
+
+让我们尝试一下:
+
+```rs
+//! src/email_client.rs
+// [...]
+
+impl EmailClient {
+    // [...]
+
+    pub async fn send_email(
+        &self,
+        recipient: SubscriberEmail,
+        subject: &str,
+        html_content: &str,
+        text_content: &str,
+    ) -> Result<(), String> {
+        // You can do better using `reqwest::Url::join` if you change
+        // `base_url`'s type from `String' to `reqwest::Url`.
+        // I'll leave it as an exercise for the reader!
+        let url = format!("{}/email", self.base_url);
+        let builder = self.http_client.post(&url);
+        Ok(())
+    }
+}
+```
+
+### JSON Body
+
+我们可以将请求 body 编码为结构体:
+
+```rs
+//! src/email_client.rs
+// [...]
+
+
+impl EmailClient {
+    // [...]
+
+    pub async fn send_email(
+        &self,
+        recipient: SubscriberEmail,
+        subject: &str,
+        html_content: &str,
+        text_content: &str,
+    ) -> Result<(), String> {
+        let url = format!("{}/email", self.base_url);
+        let request_body = SendEmailRequest {
+            from: self.sender.as_ref().to_owned(),
+            to: recipient.as_ref().to_owned(),
+            subject: subject.to_owned(),
+            html_body: html_content.to_owned(),
+            text_body: text_content.to_owned(),
+        };
+        let builder = self.http_client.post(&url);
+        Ok(())
+    }
+}
+
+struct SendEmailRequest {
+    from: String,
+    to: String,
+    subject: String,
+    html_body: String,
+    text_body: String,
+}
+```
+
+如果启用了 `reqwest` 的 `json` 功能标志（就像我们所做的那样）, `builder` 将公开一个 `json` 方法，我们可以利用该方法将 `request_body` 设置为请求的 JSON 主体:
+
+```rs
+impl EmailClient {
+    // [...]
+
+    pub async fn send_email(
+        &self,
+        recipient: SubscriberEmail,
+        subject: &str,
+        html_content: &str,
+        text_content: &str,
+    ) -> Result<(), String> {
+        let url = format!("{}/email", self.base_url);
+        let request_body = SendEmailRequest {
+            from: self.sender.as_ref().to_owned(),
+            to: recipient.as_ref().to_owned(),
+            subject: subject.to_owned(),
+            html_body: html_content.to_owned(),
+            text_body: text_content.to_owned(),
+        };
+        let builder = self.http_client.post(&url).json(&request_body);
+        Ok(())
+    }
+}
+```
+
+就差一点了!
+
+```plaintext
+error[E0277]: the trait bound `SendEmailRequest: configuration::_::_serde::Seria
+lize` is not satisfied
+   --> src/email_client.rs:38:56
+    |
+38  |         let builder = self.http_client.post(&url).json(&request_body);
+    |                                                   ---- ^^^^^^^^^^^^^ unsatisfied trait bound
+```
+
+让我们为 `SendEmailRequest` 派生 `serde::Serialize` 以使其可序列化:
+
+```rs
+//! src/email_client.rs
+// [...]
+
+#[derive(serde::Serialize)]
+struct SendEmailRequest {
+    from: String,
+    to: String,
+    subject: String,
+    html_body: String,
+    text_body: String,
+}
+```
+
+太棒了，编译通过了!
+json 方法比简单的序列化更进一步：它还会将 `Content-Type` 标头设置为 `application/json` —— 与我们在示例中看到的一致!
+
+### 鉴权令牌
+
+快完成了——我们需要在请求中添加一个授权标头, `X-Postmark-Server-Token`。
+就像发件人邮箱地址一样, 我们希望将令牌值作为字段存储在 `EmailClient` 中。
+
+让我们修改 `EmailClient::new` 和 `EmailClientSettings`:
+
+```rs
+//! src/email_client.rs
+use secrecy::SecretBox;
+
+// [...]
+
+pub struct EmailClient {
+    // [...]
+    // We don't want to log this by accident
+    authorization_token: SecretBox<String>,
+}
+
+impl EmailClient {
+    pub fn new(
+        base_url: String,
+        sender: SubscriberEmail,
+        authorization_token: SecretBox<String>,
+    ) -> Self {
+        Self {
+            // [...]
+            authorization_token,
+        }
+    }
+}
+```
+
+```rs
+//! src/configuration.rs
+// [...]
+#[derive(serde::Deserialize)]
+pub struct EmailClientSettings {
+    // [...]
+    // New (secret) configuration value!
+    pub authorization_token: SecretBox<String>,
+}
+```
+
+然后我们可以让编译器告诉我们还需要修改什么:
+
+```rs
+//! src/email_client.rs
+// [...]
+
+#[cfg(test)]
+mod tests {
+    use fake::{
+        faker::{internet::en::SafeEmail, lorem::en::Sentence}, Fake, Faker
+    };
+    use secrecy::SecretBox;
+    use wiremock::{Mock, MockServer, ResponseTemplate, matchers::any};
+
+    use crate::{domain::SubscriberEmail, email_client::EmailClient};
+
+    #[tokio::test]
+    async fn send_email_fires_a_request_to_base_url() {
+        // Arrange
+        let mock_server = MockServer::start().await;
+        let sender = SubscriberEmail::parse(SafeEmail().fake()).unwrap();
+
+        // New argument!
+        let email_client = EmailClient::new(
+            mock_server.uri(),
+            sender,
+            SecretBox::new(Faker.fake()),
+        );
+
+        // [...]
+    }
+}
+```
+
+```rs
+//! src/main.rs
+// [...]
+#[tokio::main]
+async fn main() -> std::io::Result<()> {
+    // [...]
+
+    let configuration = get_configuration().expect("Failed to read config");
+
+    // [...]
+    let email_client = EmailClient::new(
+        configuration.email_client.base_url,
+        sender_email,
+        configuration.email_client.authorization_token,
+    );
+
+    // [...]
+}
+```
+
+```yaml
+#! configuration/base.yml
+# [...]
+email_client:
+  base_url: "localhost"
+  sender_email: "test@gmail.com"
+  # New value!
+  # We are only setting the development value,
+  # we'll deal with the production token outside of version control
+  # (given that it's a sensitive secret!)
+  authorization_token: "my-secret-token"
+```
+
+我们现在可以在 send_email 中使用授权令牌:
+
+```rs
+//! src/email_client.rs
+use secrecy::{ExposeSecret, SecretBox};
+
+// [...]
+
+impl EmailClient {
+    // [...]
+
+    pub async fn send_email(
+        &self,
+        recipient: SubscriberEmail,
+        subject: &str,
+        html_content: &str,
+        text_content: &str,
+    ) -> Result<(), String> {
+        // [...]
+        let builder = self
+            .http_client
+            .post(&url)
+            .header(
+                "X-Postmark-Server-Token",
+                self.authorization_token.expose_secret(),
+            )
+            .json(&request_body);
+        Ok(())
+    }
+}
+```
+
+它立即编译通过。
+
+### 执行请求
+
+我们已准备好所有材料 - 我们只需要立即发出请求!
+
+我们可以使用 `send` 方法:
+
+```rs
+//! src/email_client.rs
+// [...]
+
+impl EmailClient {
+    pub async fn send_email(
+        &self,
+        recipient: SubscriberEmail,
+        subject: &str,
+        html_content: &str,
+        text_content: &str,
+    ) -> Result<(), String> {
+        // [...]
+        self
+            .http_client
+            .post(&url)
+            .header(
+                "X-Postmark-Server-Token",
+                self.authorization_token.expose_secret(),
+            )
+            .json(&request_body)
+            .send()
+            .await?;
+        Ok(())
+    }
+}
+```
+
+`send` 是异步的，因此我们需要等待它返回的 `Future`。
+
+send 也是一个容易出错的操作——例如，我们可能无法与服务器建立连接。我们希望在 `send` 失败时返回一个错误——这就是为什么我们使用 `?` 运算符。
+
+然而，编译器并不满意:
+
+```plaintext
+error[E0277]: `?` couldn't convert the error to `std::string::String`
+  --> src/email_client.rs:52:19
+   |
+43 | /         self
+44 | |             .http_client
+45 | |             .post(&url)
+46 | |             .header(
+...  |
+51 | |             .send()
+52 | |             .await?;
+   | |                  -^ unsatisfied trait bound
+   | |__________________|
+```
+
+`send` 返回的错误变量类型为 `reqwest::Error`,而我们的 `send_email` 使用 `String` 作为错误类型。编译器查找了转换 (`From trait` 的实现), 但找不到，因此报错。
+
+还记得吗，我们使用 `String` 作为错误变量主要是为了占位符——让我们将 `send_email` 的签名改为返回 `Result<(), reqwest::Error>`。
+
+```rs
+//! src/email_client.rs
+// [...]
+
+impl EmailClient {
+    // [...]
+
+    pub async fn send_email(
+        // [...]
+    ) -> Result<(), reqwest::Error> {
+        // [...]
+    }
+}
+```
+
+现在错误应该消失了!
+
+`cargo test` 也应该通过: 恭喜!
+
+注: 测试中的方法签名错误需要你自己修复, 本教程没有提及, 我相信你可以做到的
+
+## 加强 happy path 测试
+
+让我们再次看一下我们的“happy path”测试:
+
+```rs
+//! src/email_client.rs
+// [...]
+
+#[cfg(test)]
+mod tests {
+    use fake::{
+        Fake, Faker,
+        faker::{internet::en::SafeEmail, lorem::en::Sentence},
+    };
+    use secrecy::SecretBox;
+    use wiremock::{Mock, MockServer, ResponseTemplate, matchers::any};
+
+    use crate::{domain::SubscriberEmail, email_client::EmailClient};
+
+    #[tokio::test]
+    async fn send_email_fires_a_request_to_base_url() {
+        // Arrange
+        let mock_server = MockServer::start().await;
+        let sender = SubscriberEmail::parse(SafeEmail().fake()).unwrap();
+        let email_client =
+            EmailClient::new(mock_server.uri(), sender, SecretBox::new(Faker.fake()));
+
+        Mock::given(any())
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let subscriber_email = SubscriberEmail::parse(SafeEmail().fake()).unwrap();
+
+        let subject: String = Sentence(1..2).fake();
+        let content: String = Sentence(1..10).fake();
+
+        // Act
+        let _ = email_client
+            .send_email(subscriber_email, &subject, &content, &content)
+            .await;
+
+        // Assert
+    }
+}
+```
+
+为了轻松上手 `wiremock`，我们从一些非常基础的操作开始——我们只是断言模拟服务器被调用了一次。接下来，让我们进一步完善它，检查发出的请求是否确实符合我们的预期。
+
+### Headers, Path 和 Method
+
+`any` 并非 `wiremock` `提供的唯一开箱即用的匹配器：wiremock` 的 `matchers` 模块中还有许多其他可用的匹配器。
+
+我们可以使用 `header_exists` 来验证 `X-Postmark-Server-Token` 是否已在发送至服务器的请求中设置:
+
+```rs
+//! src/email_client.rs
+// [...]
+#[cfg(test)]
+mod tests {
+    use fake::{
+        Fake, Faker,
+        faker::{internet::en::SafeEmail, lorem::en::Sentence},
+    };
+    use secrecy::SecretBox;
+    use wiremock::{matchers::{any, header_exists}, Mock, MockServer, ResponseTemplate};
+
+    use crate::{domain::SubscriberEmail, email_client::EmailClient};
+
+    #[tokio::test]
+    async fn send_email_fires_a_request_to_base_url() {
+        Mock::given(header_exists("X-Postmark-Server-Token"))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+    }
+}
+```
+
+我们可以使用 `and` 方法将多个匹配器连接在一起。
+
+让我们添加 [`header`](https://docs.rs/wiremock/latest/wiremock/matchers/fn.header.html) 来检查 `Content-Type` 是否设置为正确的值，添加 [`path`](https://docs.rs/wiremock/latest/wiremock/matchers/fn.path.html) 来在被调用的端点上进行断言，以及添加 [`method`](https://docs.rs/wiremock/latest/wiremock/matchers/fn.method.html) 来验证 HTTP 方法:
+
+```rs
+//! src/email_client.rs
+// [...]
+
+#[cfg(test)]
+mod tests {
+    use wiremock::matchers::{header, header_exists, method, path}
+
+    #[tokio::test]
+    async fn send_email_fires_a_request_to_base_url() {
+        // [...]
+
+        Mock::given(header_exists("X-Postmark-Server-Token"))
+            .and(header("Content-Type", "application/json"))
+            .and(path("/email"))
+            .and(method("POST"))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        // [...]
+    }
+}
+```
+
+### Body
+
+到目前为止，一切顺利: `cargo test` 仍然通过。
+
+那么请求体呢?
+
+我们可以使用 body_json 来精确匹配请求体。
+
+我们可能不需要那么深入——只要检查请求体是否为有效的 JSON 格式，并且包含 Postmark 示例中所示的字段名称集合就足够了。
+
+目前没有现成的匹配器能满足我们的需求——我们需要自己实现!
+
+`wiremock` 暴露了一个 `Match trait`——所有实现该 `trait` 的程序都可以在给定的匹配器中用作匹配器。
+
+让我们把它存根掉:
+
+```rs
+//! src/email_client.rs
+// [...]
+#[cfg(test)]
+mod tests {
+    // [...]
+
+    struct SendEmailBodyMatcher;
+
+    impl wiremock::Match for SendEmailBodyMatcher {
+        fn matches(&self, request: &wiremock::Request) -> bool {
+            unimplemented!();
+        }
+    }
+
+    // [...]
+}
+```
+
+我们将传入的请求作为输入 `request`, 并需要返回一个布尔值作为输出：
+如果模拟匹配，则返回 `true`; 否则返回 `false`。
+
+我们需要将请求主体反序列化为 JSON——让我们将 `serde_json` 添加到我们的开发依赖项列表中:
+
+```shell
+cargo add serde_json --dev
+```
+
+现在我们可以编写 `matches` 的实现:
+
+```rs
+//! src/email_client.rs
+// [...]
+
+#[cfg(test)]
+mod tests {
+    struct SendEmailBodyMatcher;
+
+    impl wiremock::Match for SendEmailBodyMatcher {
+        fn matches(&self, request: &wiremock::Request) -> bool {
+            // Try to parse the body as a JSON value
+            let result: Result<serde_json::Value, _> = 
+                serde_json::from_slice(&request.body);
+            if let Ok(body) = result {
+                // Check that all the mandatory fields are populated
+                // without inspecting the field values
+                body.get("From").is_some()
+                    && body.get("To").is_some()
+                    && body.get("Subject").is_some()
+                    && body.get("HtmlBody").is_some()
+                    && body.get("TextBody").is_some()
+            } else {
+                // If parsing failed, do not match the request
+                false
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn send_email_fires_a_request_to_base_url() {
+        // [...]
+
+        Mock::given(header_exists("X-Postmark-Server-Token"))
+            .and(header("Content-Type", "application/json"))
+            .and(path("/email"))
+            .and(method("POST"))
+            // Use our custom matcher!
+            .and(SendEmailBodyMatcher)
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        // [...]
+    }
+}
+```
+
+编译成功了！
+
+但是我们的测试现在失败了...
+
+```plaintext
+---- email_client::tests::send_email_fires_a_request_to_base_url stdout ----
+
+thread 'email_client::tests::send_email_fires_a_request_to_base_url' panicked at
+ /home/cubewhy/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/wiremock-0.6
+.5/src/mock_server/exposed_server.rs:367:17:
+Verifications failed:
+- Mock #0.
+        Expected range of matching incoming requests: == 1
+        Number of matched incoming requests: 0
+
+Received requests:
+- Request #1
+        POST http://localhost/email
+x-postmark-server-token: HjhDDhi05zX5gNM
+content-type: application/json
+accept: */*
+host: 127.0.0.1:43849
+content-length: 138
+{"from":"joaquin@example.net","to":"weldon@example.com","subject":"fuga.","html_
+body":"nam ut esse amet.","text_body":"nam ut esse amet."}
+```
+
+为什么会这样?
+
+我们好像忘了大小写要求——字段名称必须使用 Pascal 大小写!
+
+我们可以通过在 `SendEmailRequest` 上添加注解来轻松解决这个问题!
+
+```rs
+//! src/email_client.rs
+// [...]
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "PascalCase")]
+struct SendEmailRequest {
+    from: String,
+    to: String,
+    subject: String,
+    html_body: String,
+    text_body: String,
+}
+```
+
+测试现在应该可以通过了。
+
+在继续下一步之前，让我们将测试重命名为 `send_email_sends_the_expected_request` —— 这样可以更好地体现测试目的。
+
+### 重构：避免不必要的内存分配
+
+我们专注于让 `send_email` 正常工作——现在我们可以再次检查一下, 看看是否还有改进的空间。
+
+让我们放大查看请求正文:
+
+```rs
+//! src/email_client.rs
+// [...]
+impl EmailClient {
+    pub fn new(
+        base_url: String,
+        sender: SubscriberEmail,
+        authorization_token: SecretBox<String>,
+    ) -> Self {
+        Self {
+            http_client: Client::new(),
+            base_url,
+            sender,
+            authorization_token,
+        }
+    }
+
+    pub async fn send_email(
+        &self,
+        recipient: SubscriberEmail,
+        subject: &str,
+        html_content: &str,
+        text_content: &str,
+    ) -> Result<(), reqwest::Error> {
+        // [...]
+        let request_body = SendEmailRequest {
+            from: self.sender.as_ref().to_owned(),
+            to: recipient.as_ref().to_owned(),
+            subject: subject.to_owned(),
+            html_body: html_content.to_owned(),
+            text_body: text_content.to_owned(),
+        };
+        // [...]
+    }
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "PascalCase")]
+struct SendEmailRequest {
+    from: String,
+    to: String,
+    subject: String,
+    html_body: String,
+    text_body: String,
+}
+```
+
+对于每个字段，我们都会分配一大堆新内存来存储克隆的字符串——这很浪费。更高效的方法是引用现有数据而不执行任何额外的分配。
+
+我们可以通过重构 `SendEmailRequest` 来实现这一点：所有字段的类型都改为字符串切片 (&str)，而不是字符串。
+
+字符串切片只是一个指向他人拥有的内存缓冲区的指针。为了将引用存储在结构体中，我们需要添加一个生命周期参数: 它会跟踪这些引用的有效期——编译器的职责是确保引用的保留时间不超过它们指向的内存缓冲区!
+
+我们开始吧!
+
+```rs
+//! src/email_client.rs
+// [...]
+
+// TODO: WIP
+```
+
+TODO: wip
