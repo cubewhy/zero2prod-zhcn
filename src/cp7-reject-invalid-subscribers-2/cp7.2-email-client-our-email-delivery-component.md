@@ -1461,7 +1461,564 @@ struct SendEmailRequest {
 //! src/email_client.rs
 // [...]
 
-// TODO: WIP
+impl EmailClient {
+    pub fn new(
+        base_url: String,
+        sender: SubscriberEmail,
+        authorization_token: SecretBox<String>,
+    ) -> Self {
+        Self {
+            http_client: Client::new(),
+            base_url,
+            sender,
+            authorization_token,
+        }
+    }
+
+    pub async fn send_email(
+        &self,
+        recipient: SubscriberEmail,
+        subject: &str,
+        html_content: &str,
+        text_content: &str,
+    ) -> Result<(), reqwest::Error> {
+        // [...]
+        let request_body = SendEmailRequest {
+            from: self.sender.as_ref(),
+            to: recipient.as_ref(),
+            subject: subject,
+            html_body: html_content,
+            text_body: text_content,
+        };
+        // [...]
+    }
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "PascalCase")]
+// Lifetime parameters always start with an apostrophe, `'`
+struct SendEmailRequest<'a> {
+    from: &'a str,
+    to: &'a str,
+    subject: &'a str,
+    html_body: &'a str,
+    text_body: &'a str,
+}
 ```
 
-TODO: wip
+就是这样，快速又轻松——Serde 为我们完成了所有繁重的工作，我们得到了更高性能的代码！
+
+## 处理失败
+
+我们已经很好地掌握了最佳路径——如果事情没有按预期进行，会发生什么？
+
+我们将讨论两种情况:
+
+- 不成功状态代码（例如 4xx、5xx 等）
+- 响应缓慢
+
+### 错误状态码
+
+我们当前的 happy path 测试仅对 `send_email` 执行的副作用进行断言——我们实际上并没有检查它的返回值!
+
+让我们确保如果服务器返回 200 OK，它就是 `Ok(())`:
+
+```rs
+//! src/email_client.rs
+// [...]
+
+#[cfg(test)]
+mod tests {
+    // New happy-path test!
+    #[tokio::test]
+    async fn send_email_succeeds_if_the_server_returns_200() {
+        // Arrange
+        let mock_server = MockServer::start().await;
+        let sender = SubscriberEmail::parse(SafeEmail().fake()).unwrap();
+        let email_client = EmailClient::new(
+            mock_server.uri(),
+            sender,
+            SecretBox::new(Box::new(Faker.fake()))
+        );
+
+        let subscriber_email = SubscriberEmail::parse(SafeEmail().fake()).unwrap();
+        let subject: String = Sentence(1..2).fake();
+        let content: String = Paragraph(1..10).fake();
+
+        // We do not copy in all the matchers we have in the other test.
+        // The purpose of this test is not to assert on the request we
+        // are sending out!
+        // We add the bare minimum needed to trigger the path we want
+        // to test in `send_email`.
+        Mock::given(any())
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        // Act
+        let outcome = email_client
+            .send_email(subscriber_email, &subject, &content, &content)
+            .await;
+
+        // Assert
+        assert_ok!(outcome);
+    }
+}
+```
+
+不出所料，测试通过了。
+
+现在让我们看看相反的情况——如果服务器返回 `500 Internal Server Error`, 我们预期会出现 Err。
+
+```rs
+//! src/email_client.rs
+// [...]
+
+#[cfg(test)]
+mod tests {
+    #[tokio::test]
+    async fn send_email_fails_of_the_server_returns_500() {
+        // Arrange
+        let mock_server = MockServer::start().await;
+        let sender = SubscriberEmail::parse(SafeEmail().fake()).unwrap();
+        let email_client = EmailClient::new(
+            mock_server.uri(),
+            sender,
+            SecretBox::new(Box::new(Faker.fake())),
+        );
+        
+        let subscriber_email = SubscriberEmail::parse(SafeEmail().fake()).unwrap();
+        let subject: String = Sentence(1..2).fake();
+        let content: String = Paragraph(1..10).fake();
+        
+        Mock::given(any())
+            // Not a 200 anymore!
+            .respond_with(ResponseTemplate::new(500))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        // Act
+        let outcome = email_client
+            .send_email(subscriber_email, &subject, &content, &content)
+            .await;
+
+        // Assert
+        assert_err!(outcome);
+    }
+}
+```
+
+我们这里还有一些工作要做:
+
+```plaintext
+test email_client::tests::send_email_fails_of_the_server_returns_500 ... FAILED
+
+failures:
+
+---- email_client::tests::send_email_fails_of_the_server_returns_500 stdout ----
+
+thread 'email_client::tests::send_email_fails_of_the_server_returns_500' panicke
+d at src/email_client.rs:195:9:
+assertion failed, expected Err(..), got Ok(())
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+```
+
+让我们再看看 `send_email`:
+
+```rs
+//! src/email_client.rs
+// [...]
+impl EmailClient {
+    // [...]
+
+    pub async fn send_email(
+        // [...]
+    ) -> Result<(), reqwest::Error> {
+        let url = format!("{}/email", self.base_url);
+        let request_body = SendEmailRequest {
+            from: self.sender.as_ref(),
+            to: recipient.as_ref(),
+            subject: subject,
+            html_body: html_content,
+            text_body: text_content,
+        };
+        self.http_client
+            .post(&url)
+            .header(
+                "X-Postmark-Server-Token",
+                self.authorization_token.expose_secret(),
+            )
+            .json(&request_body)
+            .send()
+            .await?;
+        Ok(())
+    }
+}
+```
+
+唯一可能返回错误的步骤是 `send` - 让我们检查 reqwest 的文档!
+
+> 如果发送请求时出现错误、检测到重定向循环或重定向限制已用尽，则此方法失败。
+
+基本上，只要从服务器收到有效响应, `send` 就会返回 `Ok` ——无论状态码是什么!
+
+为了获得我们想要的行为，我们需要查看 `reqwest::Response` 中可用的方法——特别是 `error_for_status`:
+
+> 如果服务器返回错误，则将响应转变为错误。
+
+它似乎符合我们的需要，让我们尝试一下。
+
+```rs
+//! src/email_client.rs
+// [...]
+impl EmailClient {
+    // [...]
+
+    pub async fn send_email(
+        // [...]
+    ) -> Result<(), reqwest::Error> {
+        // [...]
+        self.http_client
+            .post(&url)
+            .header(
+                "X-Postmark-Server-Token",
+                self.authorization_token.expose_secret(),
+            )
+            .json(&request_body)
+            .send()
+            .await?
+            .error_for_status()?;
+        Ok(())
+    }
+}
+```
+
+太棒了，测试通过了!
+
+### 超时
+
+如果服务器返回 200 OK，但需要很长时间才能返回，会发生什么情况?
+
+我们可以指示我们的模拟服务器等待一段可配置的时间后再发送响应。
+
+让我们用一个新的集成测试稍微试验一下——如果服务器需要 3 分钟才能响应怎么办!?
+
+```rs
+//! src/email_client.rs
+// [...]
+
+#[cfg(test)]
+mod tests {
+    // [...]
+
+    #[tokio::test]
+    async fn send_email_times_out_if_the_server_takes_too_long() {
+        // Arrange
+        let mock_server = MockServer::start().await;
+        let sender = SubscriberEmail::parse(SafeEmail().fake()).unwrap();
+        let email_client = EmailClient::new(
+            mock_server.uri(),
+            sender,
+            SecretBox::new(Box::new(Faker.fake())),
+        );
+
+        let subscriber_email = SubscriberEmail::parse(SafeEmail().fake()).unwrap();
+        let subject: String = Sentence(1..2).fake();
+        let content: String = Paragraph(1..10).fake();
+
+        let response = ResponseTemplate::new(200)
+            // 3 minutes!
+            .set_delay(std::time::Duration::from_secs(180));
+        Mock::given(any())
+            .respond_with(response)
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        // Act
+        let outcome = email_client
+            .send_email(subscriber_email, &subject, &content, &content)
+            .await;
+
+        // Assert
+        assert_err!(outcome);
+    }
+}
+```
+
+过了一会儿，你应该会看到类似这样的内容:
+
+```plaintext
+test email_client::tests::send_email_times_out_if_the_server_takes_too_long has 
+been running for over 60 seconds
+```
+
+这远非理想情况：如果服务器开始出现问题，我们可能会开始积累多个“挂起”的请求。
+
+我们并没有挂起服务器，所以连接处于繁忙状态：每次我们需要发送电子邮件时, 我们都必须打开一个新的连接。如果服务器恢复速度不够快，而我们又没有关闭任何打开的连接，最终可能会导致套接字耗尽/性能下降。
+
+经验法则：每次执行 IO 操作时，务必设置超时!
+
+如果服务器响应时间超过超时时间，我们就应该失败并返回错误。
+
+选择合适的超时值通常更像是一门艺术而非科学，尤其是在涉及重试的情况下: 设置得太低，可能会使服务器不堪重负; 设置得太高，则可能会再次面临客户端性能下降的风险。
+
+尽管如此，设置一个保守的超时阈值总比没有好。
+
+`reqwest` 提供了两种选择: 我们可以在客户端本身添加一个默认超时时间，该时间适用于所有发出的请求；或者，我们可以为每个请求指定一个超时时间。
+
+我们来设置一个客户端范围的超时时间: 我们将在 `EmailClient::new` 中设置它。
+
+```rs
+//! src/email_client.rs
+// [...]
+
+impl EmailClient {
+    pub fn new(
+        base_url: String,
+        sender: SubscriberEmail,
+        authorization_token: SecretBox<String>,
+    ) -> Self {
+        let http_client = Client::builder()
+            .timeout(std::time::Duration::from_secs(10))
+            .build()
+            .unwrap();
+        Self {
+            http_client,
+            base_url,
+            sender,
+            authorization_token,
+        }
+    }
+}
+
+// [...]
+```
+
+如果我们再次运行测试，它应该会通过（10秒后）。
+
+### 重构：测试辅助函数
+
+四个 EmailClient 测试中有很多重复的代码，让我们从一组测试助手中提取出其中的共同点。
+
+```rs
+//! src/email_client.rs
+// [...]
+
+#[cfg(test)]
+mod tests {
+    // [...]
+
+    /// Generate a ranodm email subject
+    fn subject() -> String {
+        Sentence(1..2).fake()
+    }
+
+    /// Generate a random email content
+    fn content() -> String {
+        Paragraph(1..10).fake()
+    }
+
+    /// Generate a ranadom subscriber email
+    fn email() -> SubscriberEmail {
+        SubscriberEmail::parse(SafeEmail().fake()).unwrap()
+    }
+
+    /// Get a test instance of `EmailClient`.
+    fn email_client(base_url: String) -> EmailClient {
+        EmailClient::new(base_url, email(), SecretBox::new(Box::new(Faker.fake())))
+    }
+
+    // [...]
+}
+```
+
+让我们在 `send_email_sends_the_expected_request` 中使用它们:
+
+```rs
+//! src/email_client.rs
+// [...]
+
+#[cfg(test)]
+mod tests {
+    // [...]
+
+    #[tokio::test]
+    async fn send_email_sends_the_expected_request() {
+        // Arrange
+        let mock_server = MockServer::start().await;
+        let email_client = email_client(mock_server.uri());
+
+        Mock::given(header_exists("X-Postmark-Server-Token"))
+            .and(header("Content-Type", "application/json"))
+            .and(path("/email"))
+            .and(method("POST"))
+            .and(SendEmailBodyMatcher)
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let subscriber_email = SubscriberEmail::parse(SafeEmail().fake()).unwrap();
+
+        let subject: String = Sentence(1..2).fake();
+        let content: String = Sentence(1..10).fake();
+
+        // Act
+        let _ = email_client
+            .send_email(subscriber_email, &subject, &content, &content)
+            .await;
+
+        // Assert
+    }
+
+}
+```
+
+视觉干扰更少——测试的目的才是核心。
+
+继续重构其他三个!
+
+注: 我相信你知道怎么重构另外三个测试了, 所以这里没有列出详细的代码。
+
+### 重构: 让测试失败的快一点
+
+我们的 HTTP 客户端的超时时间目前硬编码为 10 秒
+
+```rs
+//! src/email_client.rs
+// [...]
+
+impl EmailClient {
+    pub fn new(
+        base_url: String,
+        sender: SubscriberEmail,
+        authorization_token: SecretBox<String>,
+    ) -> Self {
+        let http_client = Client::builder()
+            .timeout(std::time::Duration::from_secs(10))
+        // [...]
+    }
+
+    // [...]
+}
+```
+
+这意味着我们的超时测试大约需要 10 秒才会失败——这是一个很长的时间，尤其是如果你在每次小改动后都要运行测试的话。
+
+让我们将超时阈值设置为可配置，以保持测试套件的响应速度。
+
+```rs
+//! src/email_client.rs
+// [...]
+impl EmailClient {
+    pub fn new(
+        base_url: String,
+        sender: SubscriberEmail,
+        authorization_token: SecretBox<String>,
+        // New argument!
+        timeout: std::time::Duration,
+    ) -> Self {
+        let http_client = Client::builder()
+            .timeout(timeout)
+        // [...]
+    }
+}
+```
+
+```rs
+//! src/configuration.rs
+// [...]
+
+#[derive(serde::Deserialize)]
+pub struct EmailClientSettings {
+    // [...]
+    // New configuration value!
+    pub timeout_milliseconds: u64,
+}
+
+impl EmailClientSettings {
+    // [...]
+
+    pub fn timeout(&self) -> std::time::Duration {
+        std::time::Duration::from_millis(self.timeout_milliseconds)
+    }
+}
+```
+
+```rs
+//! src/main.rs
+// [...]
+#[tokio::main]
+async fn main() -> std::io::Result<()> {
+    // [...]
+    let sender_email = configuration.email_client.sender()
+        .expect("Invalid sender email address");
+    let timeout = configuration.email_client.timeout();
+
+    let email_client = EmailClient::new(
+        configuration.email_client.base_url,
+        sender_email,
+        configuration.email_client.authorization_token,
+        timeout,
+    );
+
+    // [...]
+}
+```
+
+```yaml
+#! configuration/base.yaml
+# [...]
+email_client:
+  # [...]
+  timeout_milliseconds: 10000
+```
+
+项目应该可以编译了。
+
+不过我们仍然需要编辑测试!
+
+```rs
+//! src/email_client.rs
+// [...]
+
+#[cfg(test)]
+mod tests {
+    // [...]
+    fn email_client(base_url: String) -> EmailClient {
+        EmailClient::new(
+            base_url,
+            email(),
+            SecretBox::new(Box::new(Faker.fake())),
+            // Much lower than 10s!
+            std::time::Duration::from_millis(200),
+        )
+    }
+}
+```
+
+```rs
+//! tests/health_check.rs
+// [...]
+async fn spawn_app() -> TestApp {
+    // [...]
+    let sender_email = configuration
+        .email_client
+        .sender()
+        .expect("Invalid sender email address.");
+    let timeout = configuration.email_client.timeout();
+    let email_client = EmailClient::new(
+        configuration.email_client.base_url,
+        sender_email,
+        SecretBox::new(Box::new(Faker.fake())),
+        timeout,
+    );
+
+    // [...]
+}
+```
+
+所有测试都应该成功——并且整个测试套件的总执行时间应该缩短到一秒以内。
