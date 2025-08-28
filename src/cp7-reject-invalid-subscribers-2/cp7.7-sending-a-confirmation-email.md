@@ -73,6 +73,54 @@ pub async fn spawn_app() -> TestApp {
 ```rs
 //! tests/api/subscriptions.rs
 // New imports
+use wiremock::matchers::{method, path};
+use wiremock::{Mock, ResponseTemplate};
 
-// TODO: wip
+#[tokio::test]
+async fn subscribe_sends_a_confirmation_email_for_valid_data() {
+    // Arrange
+    let app = spawn_app().await;
+    let body = "name=le%20guin&email=ursula_le_guin%40gmail.com";
+
+    Mock::given(path("/email"))
+        .and(method("POST"))
+        .respond_with(ResponseTemplate::new(200))
+        .expect(1)
+        .mount(&app.email_server)
+        .await;
+
+    // Act
+    app.post_subscriptions(body.into()).await;
+
+    // Assert
+    // Mock asserts on drop
+}
 ```
+
+正如预期的那样，测试失败:
+
+```plaintext
+failures:
+
+---- subscriptions::subscribe_sends_a_confirmation_email_for_valid_data stdout -
+---
+
+thread 'subscriptions::subscribe_sends_a_confirmation_email_for_valid_data' pani
+cked at /home/cubewhy/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/wirem
+ock-0.6.5/src/mock_server/exposed_server.rs:367:17:
+Verifications failed:
+- Mock #0.
+        Expected range of matching incoming requests: == 1
+        Number of matched incoming requests: 0
+
+The server did not receive any request.
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+```
+
+请注意，如果发生故障, `wiremock` 会提供详细的故障原因分析：我们预期会收到一个请求，但实际上什么也没收到。
+
+让我们来解决这个问题。
+
+### Green 测试
+
+TODO: wip
