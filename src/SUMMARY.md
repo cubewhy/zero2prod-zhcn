@@ -67,3 +67,4 @@
   - [短暂回顾](cp7-reject-invalid-subscribers-2/cp7.4-refocus.md)
   - [零停机部署](cp7-reject-invalid-subscribers-2/cp7.5-zero-downtime-deployments.md)
   - [数据库迁移](cp7-reject-invalid-subscribers-2/cp7.6-database-migrations.md)
+  - [发送确认邮件](cp7-reject-invalid-subscribers-2/cp7.7-sending-a-confirmation-email.md)
