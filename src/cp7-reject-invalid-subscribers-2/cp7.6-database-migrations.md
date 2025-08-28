@@ -157,4 +157,36 @@ COMMIT;
 
 ## 一个新表
 
-TODO: wip
+那么 `subscription_tokens` 呢? 我们也需要三个步骤吗?
+
+不，其实简单得多：我们在迁移中添加新表，但应用程序会一直忽略它。
+
+然后，我们可以部署一个新版本的应用程序，并使用它启用确认电子邮件。
+
+让我们生成一个新的迁移脚本：
+
+```shell
+sqlx migrate add create_subscription_tokens_table
+```
+
+```plaintext
+Creating migrations/20250828122145_create_subscription_tokens_table.sql
+```
+
+这次迁移与我们为添加 `subscriptions` 而编写的第一个迁移类似:
+
+```sql
+-- Create Subscription Tokens Table
+CREATE TABLE subscription_tokens(
+    subscription_token TEXT NOT NULL,
+    subscriber_id uuid NOT NULL
+        REFERENCES subscriptions (id),
+    PRIMARY KEY (subscription_token)
+);
+```
+
+请注意这里的细节: `subscription_tokens` `中的subscriber_id` 列是外键。
+
+`subscription_tokens` `中的每一行都必须在subscriptions` `中存在一行，其id字段的值与subscriber_id` 相同，否则插入操作会失败。这可以保证所有令牌都附加到合法的订阅者。
+
+再次迁移生产数据库 - 大功告成!
