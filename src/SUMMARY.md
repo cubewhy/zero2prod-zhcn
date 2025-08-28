@@ -65,3 +65,4 @@
   - [EmailClient - 我们的的电子邮件传递组件](cp7-reject-invalid-subscribers-2/cp7.2-email-client-our-email-delivery-component.md)
   - [可维护测试套件的框架和原则](cp7-reject-invalid-subscribers-2/cp7.3-skeleton-and-principles-for-a-maintainable-test-suite.md)
   - [短暂回顾](cp7-reject-invalid-subscribers-2/cp7.4-refocus.md)
+  - [零停机部署](cp7-reject-invalid-subscribers-2/cp7.5-zero-downtime-deployments.md)
