@@ -767,3 +767,189 @@ async fn main() -> std::io::Result<()> {
 ```
 
 完成了 - 如果您想再次检查，请运行 `cargo test` !
+
+## 构建一个 API 客户端
+
+我们所有的集成测试都是黑盒测试：我们在每个测试开始时启动应用程序，并使用 HTTP 客户端 (例如 `reqwest`) 与其交互。
+
+在编写测试时，我们最终必然会为 API 实现一个客户端。
+
+这太棒了!
+
+这给了我们一个绝佳的机会来体验作为用户与 API 交互的感觉。
+
+我们只需要注意不要将客户端逻辑分散到整个测试套件中——当 API 发生变化时，我们不想为了从端点路径中删除一个尾随的 s 而进行数十次测试。
+
+让我们来看看我们的订阅测试:
+
+```rs
+//! tests/api/subscriptions.rs
+use crate::helpers::spawn_app;
+
+#[tokio::test]
+async fn subscribe_returns_a_200_for_valid_form_data() {
+    // Arrange
+    let app = spawn_app().await;
+    let app_address = app.address.as_str();
+
+    let client = reqwest::Client::new();
+    // Act
+    let body = "name=le%20guin&email=ursula_le_guin%40gmail.com";
+    let response = client
+        .post(&format!("{}/subscriptions", &app_address))
+        .header("Content-Type", "application/x-www-form-urlencoded")
+        .body(body)
+        .send()
+        .await
+        .expect("Failed to execute request.");
+
+    // Assert
+    assert_eq!(200, response.status().as_u16());
+
+    let saved = sqlx::query!("SELECT email, name FROM subscriptions",)
+        .fetch_one(&app.db_pool)
+        .await
+        .expect("Failed to fetch saved subscription.");
+
+    assert_eq!(saved.email, "ursula_le_guin@gmail.com");
+    assert_eq!(saved.name, "le guin");
+}
+
+#[tokio::test]
+async fn subscribe_returns_a_400_when_data_is_missing() {
+    // Arrange
+    let app = spawn_app().await;
+    let app_address = app.address.as_str();
+    let client = reqwest::Client::new();
+    let test_cases = vec![
+        ("name=le%20guin", "missing the email"),
+        ("email=ursula_le_guin%40gmail.com", "missing the name"),
+        ("", "missing both name and email"),
+    ];
+    for (invalid_body, error_message) in test_cases {
+        // Act
+        let response = client
+            .post(&format!("{}/subscriptions", &app_address))
+            .header("Content-Type", "application/x-www-form-urlencoded")
+            .body(invalid_body)
+            .send()
+            .await
+            .expect("Failed to execute request.");
+
+        // Assert
+        assert_eq!(
+            400,
+            response.status().as_u16(),
+            // Additional customised error message on test failure
+            "The API did not fail with 400 Bad Request when the payload was {}.",
+            error_message
+        );
+    }
+}
+
+#[tokio::test]
+async fn subscribe_returns_a_200_when_fields_are_present_but_invalid() {
+    // Arrange
+    let app = spawn_app().await;
+    let client = reqwest::Client::new();
+    let test_cases = vec![
+        ("name=&email=ursula_le_guin%40gmail.com", "empty name"),
+        ("name=Ursula&email=", "empty email"),
+        ("name=Ursula&email=definitely-not-an-email", "invalid email"),
+    ];
+    for (body, description) in test_cases {
+        // Act
+        let response = client
+            .post(&format!("{}/subscriptions", &app.address))
+            .header("Content-Type", "application/x-www-form-urlencoded")
+            .body(body)
+            .send()
+            .await
+            .expect("Failed to execute request.");
+
+        // Assert
+        assert_eq!(
+            400,
+            response.status().as_u16(),
+            "The API did not return a 400 OK when the payload was {}.",
+            description
+        );
+    }
+}
+```
+
+每个测试中都有相同的调用代码——我们应该将其提取出来，并向 `TestApp` 结构体中添加一个辅助方法:
+
+```rs
+//! tests/api/helpers.rs
+// [...]
+
+pub struct TestApp {
+    // [...]
+}
+
+
+impl TestApp {
+    pub async fn post_subscriptions(&self, body: String) -> reqwest::Response {
+        reqwest::Client::new()
+            .post(&format!("{}/subscriptions", &self.address))
+            .header("Content-Type", "application/x-www-form-urlencoded")
+            .body(body)
+            .send()
+            .await
+            .expect("Failed to execute request.")
+    }
+}
+```
+
+```rs
+//! tests/api/subscriptions.rs
+use crate::helpers::spawn_app;
+
+#[tokio::test]
+async fn subscribe_returns_a_200_for_valid_form_data() {
+    // Arrange
+    // [...]
+    let response = app.post_subscriptions(body.into()).await;
+
+    // Assert
+    // [...]
+}
+
+#[tokio::test]
+async fn subscribe_returns_a_400_when_data_is_missing() {
+    // Arrange
+    // [...]
+    for (invalid_body, error_message) in test_cases {
+        // Act
+        let response = app.post_subscriptions(invalid_body.into()).await;
+
+        // Assert
+        // [...]
+    }
+}
+
+#[tokio::test]
+async fn subscribe_returns_a_200_when_fields_are_present_but_invalid() {
+    // Arrange
+    // [...]
+    for (body, description) in test_cases {
+        // Act
+        let response = app.post_subscriptions(body.into()).await;
+
+        // Assert
+        // [...]
+    }
+}
+
+```
+
+我们可以为健康检查端点添加另一个方法，但它只会使用一次——目前没有必要。
+
+## 小结
+
+我们最初开发了一个单文件测试套件，最终构建了一个模块化测试套件和一套强大的辅助工具。
+
+就像应用程序代码一样，测试代码也永无止境: 随着项目的发展，我们必须持续改进，但我们已经奠定了坚实的基础，能够持续前进，不失去动力。
+
+现在，我们已准备好处理发送确认电子邮件所需的剩余功能。
