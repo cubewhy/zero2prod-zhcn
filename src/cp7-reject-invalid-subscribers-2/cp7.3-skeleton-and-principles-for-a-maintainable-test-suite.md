@@ -198,9 +198,9 @@ test result: ok. 4 passed; finished in 0.44s
 
 如果每个集成测试文件都是独立的可执行文件，那么我们如何共享测试辅助函数呢?
 
-第一个选项是定义一个独立的模块，例如 `tests/helpers/mod.rs` 。
+第一个选项是定义一个独立的模块，例如 `tests/helpers.rs` 。
 
-您可以在 `mod.rs` 中添加常用函数（或在其中定义其他子模块），然后在测试文件 (例如 `tests/health_check.rs`) 中引用这些辅助函数，如下所示:
+您可以在 `helper.rs` 中添加常用函数（或在其中定义其他子模块），然后在测试文件 (例如 `tests/health_check.rs`) 中引用这些辅助函数，如下所示:
 
 ```rs
 //! tests/health_check.rs
@@ -256,7 +256,514 @@ mod subscriptions;
 
 ```rs
 //! tests/api/helpers.rs
-// TODO: wip
+use fake::{Fake, Faker};
+use once_cell::sync::Lazy;
+use secrecy::SecretBox;
+use sqlx::Executor;
+use std::net::TcpListener;
+
+use sqlx::{Connection, PgConnection, PgPool};
+use uuid::Uuid;
+use zero2prod::{
+    configuration::{DatabaseSettings, get_configuration},
+    email_client::EmailClient,
+    telemetry::{get_subscriber, init_subscriber},
+};
+
+// Ensure that the `tracing` stack is only initialised once using `once_cell`
+static TRACING: Lazy<()> = Lazy::new(|| {
+    /// [...]
+});
+
+pub struct TestApp {
+    pub address: String,
+    pub db_pool: PgPool,
+}
+
+pub async fn spawn_app() -> TestApp {
+    // [...]
+}
+
+pub async fn configure_database(config: &DatabaseSettings) -> PgPool {
+    // [...]
+}
+
 ```
 
-TODO: wip
+```rs
+//! tests/api/health_check.rs
+use crate::helpers::spawn_app;
+
+#[tokio::test]
+async fn health_check_works() {
+    // [...]
+}
+```
+
+```rs
+//! tests/api/subscriptions.rs
+use crate::helpers::spawn_app;
+
+#[tokio::test]
+async fn subscribe_returns_a_200_for_valid_form_data() {
+    // [...]
+}
+
+#[tokio::test]
+async fn subscribe_returns_a_400_when_data_is_missing() {
+    // [...]
+}
+
+#[tokio::test]
+async fn subscribe_returns_a_200_when_fields_are_present_but_invalid() {
+    // [...]
+}
+```
+
+`cargo test` 应该会成功，并且不会出现任何警告。
+
+恭喜，您已将测试套件分解为更小、更易于管理的模块!
+
+新的结构有一些积极的副作用: 它是递归的。
+
+如果 `tests/api/subscriptions.rs` 变得过于庞大，我们可以将其转换为一个模块，其中 `tests/api/subscriptions/helpers.rs` 包含特定于订阅的测试帮助程序以及一个或多个专注于特定流程或关注点的测试文件; - 我们的帮助程序函数的实现细节被封装了。
+
+事实证明，我们的测试只需要了解 `spawn_app` 和 `TestApp` - 无需暴露 `configure_database` 或 TRACING，我们可以将这些复杂性隐藏在帮助程序模块中 - 我们只有一个测试二进制文件。
+
+如果您有一个采用扁平文件结构的大型测试套件，那么每次运行 `cargo test` 时，您很快就会构建数十个可执行文件。虽然每个可执行文件都是并行编译的，但[链接](https://en.wikipedia.org/wiki/Linker_(computing))阶段却是完全顺序执行的！将所有测试用例打包成一个可执行文件可以减少在 CI 中编译测试套件的时间。
+
+如果您正在运行 Linux，您可能会看到类似这样的错误
+
+```plaintext
+thread 'actix-rt:worker' panicked at
+'Can not create Runtime: Os { code: 24, kind: Other, message: "Too many open files" }',
+```
+
+重构后运行 cargo test 时。
+这是由于操作系统对每个进程打开的文件描述符（包括套接字）的最大数量进行了限制——考虑到我们现在将所有测试都作为单个二进制文件的一部分运行，我们可能会超出这个限制。该限制通常设置为 1024，但您可以使用 `ulimit -n X` (例如 `ulimit -n 10000`) 来提高该限制以解决此问题。
+
+## 共享 Startup 逻辑
+
+现在我们已经重新设计了测试套件的布局，是时候深入研究测试逻辑本身了。
+
+我们将从 spawn_app 开始:
+
+```rs
+//! tests/api/helpers.rs
+// [...]
+
+
+pub struct TestApp {
+    pub address: String,
+    pub db_pool: PgPool,
+}
+
+pub async fn spawn_app() -> TestApp {
+    // The first time `initialize` is invoked the code in `TRACING` is executed.
+    // All other invocations will instead skip execution.
+    Lazy::force(&TRACING);
+
+    let listener = TcpListener::bind("127.0.0.1:0").expect("Faield to bind random port");
+    // We retrieve the port assigned to us by the OS
+    let port = listener.local_addr().unwrap().port();
+    let address = format!("http://127.0.0.1:{}", port);
+
+    let mut configuration = get_configuration().expect("");
+
+    configuration.database.database_name = Uuid::new_v4().to_string();
+
+    let connection_pool = configure_database(&configuration.database).await;
+
+    // Build a new email client
+    let sender_email = configuration
+        .email_client
+        .sender()
+        .expect("Invalid sender email address.");
+    let timeout = configuration.email_client.timeout();
+    let email_client = EmailClient::new(
+        configuration.email_client.base_url,
+        sender_email,
+        SecretBox::new(Box::new(Faker.fake())),
+        timeout,
+    );
+
+    let server = zero2prod::run(listener, connection_pool.clone(), email_client)
+        .expect("Failed to bind address");
+    let _ = tokio::spawn(server);
+
+    TestApp {
+        address,
+        db_pool: connection_pool,
+    }
+}
+
+// [...]
+```
+
+这里的大部分代码与我们在 `main` 入口点中发现的代码极为相似:
+
+```rs
+//! src/main.rs
+
+#[tokio::main]
+async fn main() -> std::io::Result<()> {
+    let subscriber = get_subscriber("zero2prod", "info", std::io::stdout);
+    init_subscriber(subscriber);
+
+    let configuration = get_configuration().expect("Failed to read config");
+    let connection_pool = PgPoolOptions::new()
+        .acquire_timeout(std::time::Duration::from_secs(2))
+        .connect_lazy_with(configuration.database.with_db());
+
+    let sender_email = configuration.email_client.sender()
+        .expect("Invalid sender email address");
+    let timeout = configuration.email_client.timeout();
+
+    let email_client = EmailClient::new(
+        configuration.email_client.base_url,
+        sender_email,
+        configuration.email_client.authorization_token,
+        timeout,
+    );
+
+    let address = format!(
+        "{}:{}",
+        configuration.application.host, configuration.application.port
+    );
+    let listener = TcpListener::bind(address)?;
+
+    run(listener, connection_pool, email_client)?.await
+}
+```
+
+每次添加依赖项或修改服务器构造函数时，我们至少有两个地方需要修改——最近我们只是敷衍地修改了 `EmailClient`。这有点烦人。
+
+更重要的是，我们应用程序代码中的启动逻辑从未经过测试。
+
+随着代码库的演变，它们可能会开始出现细微的差异，导致测试代码与生产环境中的行为有所不同。
+
+我们将首先从主函数中提取逻辑，然后找出在测试代码中利用相同代码路径所需的钩子。
+
+### 提取 Startup 代码
+
+从结构角度来看，我们的启动逻辑是一个函数，
+它以“设置”作为输入，并返回一个应用程序实例作为输出。
+
+因此，我们的主函数应该如下所示:
+
+```rs
+//! src/main.rs
+
+#[tokio::main]
+async fn main() -> std::io::Result<()> {
+    let subscriber = get_subscriber("zero2prod", "info", std::io::stdout);
+    init_subscriber(subscriber);
+
+    let configuration = get_configuration().expect("Failed to read config");
+
+    let server = build(configuration).await?;
+    server.await?;
+    Ok(())
+}
+```
+
+我们首先执行一些二进制特定的逻辑（例如遥测初始化），然后从支持的源（文件 + 环境变量）构建一组配置值，并使用它来启动一个应用程序。线性的。
+
+然后我们定义这个 `build` 函数:
+
+```rs
+//! src/startup.rs
+// [...]
+use crate::configuration::Settings;
+use sqlx::postgres::PgPoolOptions;
+
+pub async fn build(configuration: Settings) -> Result<Server, std::io::Error> {
+    let connection_pool = PgPoolOptions::new()
+        .acquire_timeout(std::time::Duration::from_secs(2))
+        .connect_lazy_with(configuration.database.with_db());
+
+    // Build an `EmailClient` using `configuration`
+    let sender_email = configuration
+        .email_client
+        .sender()
+        .expect("Invalid sender email address");
+    let timeout = configuration.email_client.timeout();
+
+    let email_client = EmailClient::new(
+        configuration.email_client.base_url,
+        sender_email,
+        configuration.email_client.authorization_token,
+        timeout,
+    );
+
+    let address = format!(
+        "{}:{}",
+        configuration.application.host, configuration.application.port
+    );
+    let listener = TcpListener::bind(address)?;
+
+    run(listener, connection_pool, email_client)
+}
+```
+
+没什么特别的——我们只是移动了之前主函数里的代码。现在就让它更易于测试吧!
+
+### 在我们的启动逻辑中测试钩子
+
+让我们再次看一下 spawn_app 函数:
+
+```rs
+//! tests/api/helpers.rs
+// [...]
+use zero2prod::startup::build;
+// [...]
+
+pub async fn spawn_app() -> TestApp {
+    // The first time `initialize` is invoked the code in `TRACING` is executed.
+    // All other invocations will instead skip execution.
+    Lazy::force(&TRACING);
+
+    let listener = TcpListener::bind("127.0.0.1:0").expect("Faield to bind random port");
+    // We retrieve the port assigned to us by the OS
+    let port = listener.local_addr().unwrap().port();
+    let address = format!("http://127.0.0.1:{}", port);
+
+    let mut configuration = get_configuration().expect("");
+
+    configuration.database.database_name = Uuid::new_v4().to_string();
+
+    let connection_pool = configure_database(&configuration.database).await;
+
+    // Build a new email client
+    let sender_email = configuration
+        .email_client
+        .sender()
+        .expect("Invalid sender email address.");
+    let timeout = configuration.email_client.timeout();
+    let email_client = EmailClient::new(
+        configuration.email_client.base_url,
+        sender_email,
+        SecretBox::new(Box::new(Faker.fake())),
+        timeout,
+    );
+
+    let server = zero2prod::run(listener, connection_pool.clone(), email_client)
+        .expect("Failed to bind address");
+    let _ = tokio::spawn(server);
+
+    TestApp {
+        address,
+        db_pool: connection_pool,
+    }
+}
+```
+
+概括来说，我们有以下几个阶段:
+
+- 执行特定于测试的设置（例如，初始化跟踪订阅者）；
+- 随机化配置以确保测试不会相互干扰（例如，为每个测试用例使用不同的逻辑数据库）；
+- 初始化外部资源（例如，创建和迁移数据库！）；
+- 构建应用程序；
+- 将应用程序作为后台任务启动，并返回一组与其交互的资源。
+
+我们可以直接把构建过程放在那里就完事了吗?
+
+当然不行，但让我们尝试看看它有哪些不足之处:
+
+```rs
+//! tests/api/helpers.rs
+// [...]
+
+pub async fn spawn_app() -> TestApp {
+    Lazy::force(&TRACING);
+
+    // Randomise configuration to ensure test isolation
+    let mut configuration = {
+        let mut c = get_configuration().expect("Failed to read configuration.");
+        c.database.database_name = Uuid::new_v4().to_string();
+        c.application_port = 0;
+        c
+    };
+
+    // Create and migrate the database
+    let connection_pool = configure_database(&configuration.database).await;
+
+    // Launch the application as a background task
+    let server = build(configuration).await.expect("Failed to build application.");
+    let _ = tokio::spawn(server);
+
+    TestApp {
+        // How do we get these?
+        address: todo!(),
+        db_pool: todo!()
+    }
+}
+```
+
+它几乎成功了——但最终却出了问题: 我们无法检索操作系统分配给应用程序的随机地址，而且我们也不知道如何构建一个连接到数据库的连接池，而这个连接池需要对影响持久状态的副作用执行断言。
+
+我们先来处理连接池: 我们可以将构建过程中的初始化逻辑提取到一个独立的函数中，并调用它两次。
+
+```rs
+//! src/startup.rs
+// [...]
+
+// We are taking a reference now!
+pub async fn build(configuration: &Settings) -> Result<Server, std::io::Error> {
+    let connection_pool = get_connection_pool(&configuration.database);
+
+    // [...]
+}
+
+
+pub fn get_connection_pool(configuration: &DatabaseSettings) -> PgPool {
+    PgPoolOptions::new()
+        .acquire_timeout(std::time::Duration::from_secs(2))
+        .connect_lazy_with(configuration.with_db())
+}
+```
+
+```rs
+//! tests/api/helpers.rs
+// [...]
+
+pub async fn spawn_app() -> TestApp {
+    Lazy::force(&TRACING);
+
+    // Randomise configuration to ensure test isolation
+    let configuration = {
+        let mut c = get_configuration().expect("Failed to read configuration")   ;
+        c.database.database_name = Uuid::new_v4().to_string();
+        c.application.port = 0;
+        c
+    };
+
+    // Create and migrate the database
+    configure_database(&configuration.database).await;
+
+    // Launch the application as a background task
+    let server = build(&configuration).await.expect("Failed to build application") ;
+    let _ = tokio::spawn(server);
+
+    TestApp {
+        address: todo!(),
+        db_pool: get_connection_pool(&configuration.database),
+    }
+}
+```
+
+您必须在 `src/configuration.rs` 中的所有结构体中添加 `#[derive(Clone)]` 才能使编译器正常运行，但数据库连接池已经完成了。
+
+我们如何获取应用程序地址呢?
+
+`actix_web::dev::Server` 是 `build` 返回的类型，它不允许我们检索应用程序端口。
+
+注: 你还需要将 `SecretBox` 修改为 `SecretString` 来满足 Clone trait 的要求, 使用 `SecretString::from(String)` 创建 `SecretString`
+
+我们需要在您的应用程序代码中做一些准备工作——我们将把 `actix` `web::dev::Server` 包装成一个新的类型，以保存我们想要的信息。
+
+```rs
+//! src/startup.rs
+// [...]
+
+// A new type to hold the newly built server and its port
+pub struct Application {
+    port: u16,
+    server: Server,
+}
+
+impl Application {
+    // We have converted the `build` function into a constructor for
+    // `Application`.
+    pub async fn build(configuration: Settings) -> Result<Self, std::io::Error> {
+        let connection_pool = get_connection_pool(&configuration.database);
+
+        let sender_email = configuration
+            .email_client
+            .sender()
+            .expect("Invalid sender email address.");
+        let email_client = EmailClient::new(
+            configuration.email_client.base_url,
+            sender_email,
+            configuration.email_client.authorization_token,
+            std::time::Duration::from_secs(10),
+        );
+
+        let address = format!(
+            "{}:{}",
+            configuration.application.host,
+            configuration.application.port
+        );
+        let listener = TcpListener::bind(&address)?;
+        let port = listener.local_addr()?.port();
+        let server = run(listener, connection_pool, email_client)?;
+
+        Ok(Self {
+            port,
+            server
+        })
+    }
+
+
+    pub fn port(&self) -> u16 {
+        self.port
+    }
+
+    // A more expressive name that makes it clear that
+    // this function only returns when the application is stopped.
+    pub async fn run_until_stopped(self) -> Result<(), std::io::Error> {
+        self.server.await
+    }
+}
+```
+
+```rs
+//! tests/api/helpers.rs
+// [...]
+// New import!
+use zero2prod::startup::Application;
+
+pub async fn spawn_app() -> TestApp {
+    Lazy::force(&TRACING);
+
+    // Randomise configuration to ensure test isolation
+    let configuration = {
+        let mut c = get_configuration().expect("Failed to read configuration")   ;
+        c.database.database_name = Uuid::new_v4().to_string();
+        c.application.port = 0;
+        c
+    };
+
+    // Create and migrate the database
+    configure_database(&configuration.database).await;
+
+    let application = Application::build(configuration.clone())
+        .await
+        .expect("Failed to build application.");
+
+    // Get the port before spawning the application
+    let address = format!("http://127.0.0.1:{}", application.port());
+    let _ = tokio::spawn(application.run_until_stopped());
+
+    TestApp {
+        address,
+        db_pool: get_connection_pool(&configuration.database),
+    }
+}
+```
+
+```rs
+//! src/main.rs
+// New import!
+use zero2prod::startup::Application;
+
+async fn main() -> std::io::Result<()> {
+    // [...]
+
+    let application = Application::build(configuration).await?;
+    application.run_until_stopped().await?;
+    Ok(())
+}
+```
+
+完成了 - 如果您想再次检查，请运行 `cargo test` !
