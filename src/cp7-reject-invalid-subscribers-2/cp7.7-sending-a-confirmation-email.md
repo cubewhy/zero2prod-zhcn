@@ -762,4 +762,184 @@ pub async fn confirm(_parameters: web::Query<Parameters>) -> HttpResponse {
 
 它需要实现 `serde::Deserialize` 接口，以便 actix-web 能够根据传入的请求路径构建它。只需添加一个 `web::Query<Parameter>` 类型的函数参数来确认，指示 actix-web 仅在提取成功时调用处理程序。如果提取失败，则会自动向调用者返回 400 Bad Request 错误。
 
-我们的测试现在应该可以通过了。d
+我们的测试现在应该可以通过了。
+
+## 连接到点
+
+现在我们有了 `GET /subscriptions/confirm` 处理程序，我们可以尝试执行完整的旅程！
+
+### 连接到点 - Red 测试
+
+我们将像用户一样操作：我们将调用 `POST /subscriptions` 方法，从发出的电子邮件请求中提取
+确认链接（使用我们已经构建的 `linkify` 机制），然后调用该方法确认订阅，并期望返回 200 OK。
+我们暂时不会从数据库中检查状态，因为这将是我们最后的收尾工作。
+
+我们来记录一下:
+
+```rs
+//! tests/api/subscriptions_confirm.rs
+// [...]
+use reqwest::Url;
+use wiremock::{matchers::{method, path}, Mock, ResponseTemplate};
+
+#[tokio::test]
+async fn the_link_returned_by_subscribe_returns_a_200_if_called() {
+    // Arrange
+    let app = spawn_app().await;
+    let body = "name=le%20guin&email=ursula_le_guin%40gmail.com";
+
+    Mock::given(path("/email"))
+        .and(method("POST"))
+        .respond_with(ResponseTemplate::new(200))
+        .mount(&app.email_server)
+        .await;
+    
+    app.post_subscriptions(body.into()).await;
+    let email_request = &app.email_server.received_requests().await.unwrap()[0];
+    let body: serde_json::Value = serde_json::from_slice(&email_request.body).unwrap();
+    
+    // Extract the link from one of the request fields
+    let get_link = |s: &str| {
+        let links: Vec<_> = linkify::LinkFinder::new()
+            .links(s)
+            .filter(|l| *l.kind() == linkify::LinkKind::Url)
+            .collect();
+        assert_eq!(links.len(), 1);
+        links[0].as_str().to_owned()
+    };
+
+    let raw_confirmation_link = get_link(&body["HtmlBody"].as_str().unwrap());
+    let confirmation_link = Url::parse(&raw_confirmation_link).unwrap();
+    
+    // Let's make sure we don't call random APIs on the web
+    assert_eq!(confirmation_link.host_str().unwrap(), "127.0.0.1");
+
+    // Act
+    let response = reqwest::get(confirmation_link)
+        .await
+        .unwrap();
+
+    // Assert
+    assert_eq!(response.status().as_u16(), 200);
+}
+```
+
+这里存在相当多的代码重复，但我们会适时处理。
+
+我们现在的首要任务是确保测试顺利通过。
+
+### 连接到点 - Green 测试
+
+我们先来处理一下 URL 问题。
+
+目前，它被硬编码在
+
+```rs
+//! src/routes/subscriptions.rs
+// [...]
+pub async fn send_confirmation_email(
+    email_client: &EmailClient,
+    new_subscriber: NewSubscriber,
+) -> Result<(), reqwest::Error> {
+    let confirmation_link = "https://my-api.com/subscriptions/confirm";
+    // [...]
+}
+```
+
+域名和协议会根据应用程序运行的环境而有所不同：测试环境为 `http://127.0.0.1`, 而生产环境中运行的应用程序则需要正确的 DNS 记录，并且使用 HTTPS 协议。
+
+最简单的正确方法是将域名作为配置值传入。
+
+让我们在 `ApplicationSettings` 中添加一个新字段:
+
+```rs
+//! src/configurations.rs
+// [...]
+#[derive(serde::Deserialize, Clone)]
+pub struct ApplicationSettings {
+    #[serde(deserialize_with = "deserialize_number_from_string")]
+    pub port: u16,
+    pub host: String,
+    pub base_url: String,
+}
+```
+
+```yaml
+# configuration/local.yaml
+application:
+  base_url: "http://127.0.0.1"
+```
+
+```yaml
+#! spec.yaml
+# [...]
+services:
+  - name: zero2prod
+    # [...]
+    envs:
+    # We use DO's APP_URL to inject the dynamically
+    # provisioned base url as an environment variable
+      - key: APP_APPLICATION__BASE_URL
+        scope: RUN_TIME
+        value: ${APP_URL}
+      # [...]
+# [...]
+```
+
+每次修改 spec.yaml 时，请务必将更改应用到 DigitalOcean; 通过 `doctl apps list --format ID` 获取您的应用标识符，然后运行 `​​doctl apps update $APP_ID --spec spec.yaml` .
+
+现在我们需要在应用上下文中注册该值——你应该已经熟悉这个过程了:
+
+```rs
+//! src/startup.rs
+// [...]
+impl Application {
+    // We have converted the `build` function into a constructor for
+    // `Application`.
+    pub async fn build(configuration: Settings) -> Result<Self, std::io::Error> {
+        // [...]
+        let server = run(
+            listener,
+            connection_pool,
+            email_client,
+            // New parameter!
+            configuration.application.base_url,
+        )?;
+
+        Ok(Self { port, server })
+    }
+
+    // [...]
+}
+
+// We need to define a wrapper type in order to retrieve the URL
+// in the `subscribe` handler.
+// Retrieval from the context, in actix-web, is type-based: using
+// a raw `String` would expose us to conflicts.
+#[derive(Clone)]
+pub struct ApplicationBaseUrl(pub String);
+
+pub fn run(
+    // [...]
+    // New parameter!
+    base_url: String,
+) -> Result<Server, std::io::Error> {
+    // [...]
+    let base_url = ApplicationBaseUrl(base_url);
+
+    let server = HttpServer::new(move || {
+        App::new()
+            // [...]
+            .app_data(base_url.clone())
+    })
+    // [...]
+}
+```
+
+我们现在可以在请求处理程序中访问它:
+
+```rs
+//! src/routres/subscriptions.rs
+// [...]
+// TODO: WIP
+```
