@@ -14,7 +14,7 @@
 
 在此阶段，我们不会查看电子邮件的正文，特别是，我们不会检查其中是否包含确认链接。
 
-### Red 测试
+### 静态电子邮件 - Red 测试
 
 要编写此测试，我们需要增强 `TestApp`。
 
@@ -123,7 +123,7 @@ note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
 
 让我们来解决这个问题。
 
-### Green 测试
+### 静态电子邮件 - Green 测试
 
 我们的处理程序现在看起来像这样：
 
@@ -260,3 +260,192 @@ async fn subscribe_returns_a_200_for_valid_form_data() {
 一切顺利，测试通过了。
 
 目前没有太多需要重构的地方，我们继续吧。
+
+## 静态确认链接
+
+让我们稍微提高一点标准 --我们将扫描电子邮件的正文以检索确认链接。
+
+### 静态确认链接 - Red 测试
+
+我们（目前）并不关心链接是动态的还是实际有意义的——我们
+只想确保正文中有一些看起来像链接的内容。
+
+我们还应该在纯文本和 HTML 版本的邮件正文中使用相同的链接。
+
+如何获取 `wiremock::MockServer` 拦截的请求正文?
+
+我们可以使用它的 `received_requests` 方法——只要启用了请求记录（默认设置），它就会返回一个包含服务器拦截的所有请求的向量。
+
+```rs
+//! tests/api/subscriptions.rs
+// [...]
+
+#[tokio::test]
+async fn subscribe_sends_a_confirmation_email_with_a_link() {
+    // Arrange
+    let app = spawn_app().await;
+    let body = "name=le%20guin&email=ursula_le_guin%40gmail.com";
+
+    Mock::given(path("/email"))
+        .and(method("POST"))
+        .respond_with(ResponseTemplate::new(200))
+        // We are not setting an expectation here anymore
+        // The test is focused on another aspect of the app
+        // behaviour.
+        .mount(&app.email_server)
+        .await;
+
+    // Act
+    app.post_subscriptions(body.into()).await;
+
+    // Assert
+    // Get the first intercepted request
+    let email_request = &app.email_server.received_requests().await.unwrap()[0];
+    // Parse the body as JSON, start from raw bytes
+    let body: serde_json::Value =  serde_json::from_slice(&email_request.body).unwrap();
+}
+```
+
+现在我们需要从中提取链接。
+
+最明显的方法是使用正则表达式。不过，我们必须面对现实：正则表达式本身就很复杂，而且需要一段时间才能正确使用。
+
+再次，我们可以利用 Rust 生态系统的成果——让我们将 linkify 添加为开发依赖项:
+
+```shell
+cargo add linkify --dev
+```
+
+我们可以使用 `linkify` 扫描文本并返回提取的链接的迭代器。
+
+```rs
+//! tests/api/subscriptions.rs
+// [...]
+async fn subscribe_sends_a_confirmation_email_with_a_link() {
+    // [...]
+    let body: serde_json::Value =  serde_json::from_slice(&email_request.body).unwrap();
+
+    // Extract the link from one of the request fields.
+    let get_link = |s: &str| {
+        let links: Vec<_> = linkify::LinkFinder::new()
+            .links(s)
+            .filter(|l| *l.kind() == linkify::LinkKind::Url)
+            .collect();
+        assert_eq!(links.len(), 1);
+        links[0].as_str().to_owned()
+    };
+
+    let html_link = get_link(&body["HtmlBody"].as_str().unwrap());
+    let text_link = get_link(&body["TextBody"].as_str().unwrap());
+    // The two links should be identical
+    assert_eq!(html_link, text_link);
+}
+```
+
+如果我们运行测试套件，我们应该看到新的测试用例失败:
+
+```plaintext
+thread 'subscriptions::subscribe_sends_a_confirmation_email_with_a_link' panicke
+d at tests/api/subscriptions.rs:133:9:
+assertion `left == right` failed
+  left: 0
+ right: 1
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+```
+
+### 静态确认链接 - Green 测试
+
+我们需要再次调整请求处理程序以满足新的测试用例:
+
+```rs
+//! src/route/subscriptions.rs
+// [...]
+
+pub async fn subscribe(
+    form: web::Form<FormData>,
+    pool: web::Data<PgPool>,
+    // Get the email client from the app context
+    email_client: web::Data<EmailClient>,
+) -> HttpResponse {
+    // [...]
+    let confirmation_link = "https://my-api.com/subscriptions/confirm";
+    // Send a (useless) email to the new subscriber
+    // We are ignoring email delivery errors for now.
+    if email_client
+        .send_email(
+            new_subscriber.email,
+            "Welcome",
+            &format!("Welcome to our newsletter!<br />\
+            Click <a href=\"{confirmation_link}\">here</a> to confirm your subscription."),
+            &format!("Welcome to our newsletter!\nVisit {confirmation_link} to confirm your subscription."),
+        )
+        .await
+        .is_err()
+    {
+        return HttpResponse::InternalServerError().finish();
+    }
+    HttpResponse::Ok().finish()
+}
+```
+
+测试应该立即通过。
+
+### 静态确认链接 - 重构
+
+我们的请求处理程序有点忙——现在有很多代码在处理我们的确认电子邮件。
+
+让我们将其提取到一个单独的函数中:
+
+```rs
+//! src/routes/subscriptions.rs
+// [...]
+#[tracing::instrument(/*[...]*/)]
+pub async fn subscribe(
+    form: web::Form<FormData>,
+    pool: web::Data<PgPool>,
+    // Get the email client from the app context
+    email_client: web::Data<EmailClient>,
+) -> HttpResponse {
+    let new_subscriber = match form.into_inner().try_into() {
+        Ok(subscriber) => subscriber,
+        Err(_) => return HttpResponse::BadRequest().finish(),
+    };
+    if insert_subscriber(&pool, &new_subscriber).await.is_err() {
+        return HttpResponse::InternalServerError().finish();
+    }
+    if send_confirmation_email(&email_client, new_subscriber)
+        .await
+        .is_err()
+    {
+        return HttpResponse::InternalServerError().finish();
+    }
+    HttpResponse::Ok().finish()
+}
+
+#[tracing::instrument(
+    name = "Send a confirmation email to a new subscriber",
+    skip(email_client, new_subscriber)
+)]
+pub async fn send_confirmation_email(
+    email_client: &EmailClient,
+    new_subscriber: NewSubscriber,
+) -> Result<(), reqwest::Error> {
+    let confirmation_link = "https://my-api.com/subscriptions/confirm";
+    let html_body = format!(
+        "Welcome to our newsletter!<br />\
+            Click <a href=\"{confirmation_link}\">here</a> to confirm your subscription."
+    );
+    let plain_body = format!(
+        "Welcome to our newsletter!\nVisit {confirmation_link} to confirm your subscription."
+    );
+    email_client
+        .send_email(new_subscriber.email, "Welcome", &html_body, &plain_body)
+        .await
+}
+```
+
+`subscribe` 再次关注整体流程，而不必担心任何步骤的细节。
+
+## 待确认
+
+TODO: WIP
