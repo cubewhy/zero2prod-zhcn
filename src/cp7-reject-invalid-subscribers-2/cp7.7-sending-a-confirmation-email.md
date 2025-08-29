@@ -648,5 +648,118 @@ mod subscriptions_confirm;
 
 ```rs
 //! tests/api/subscriptions_confirm.rs
-// TODO: WIP
+use crate::helpers::spawn_app;
+
+#[tokio::test]
+async fn confirmations_without_token_are_rejected_with_a_400() {
+    // Arrange
+    let app = spawn_app().await;
+
+    // Act
+    let response = reqwest::get(&format!("{}/subscriptions/confirm", app.address))
+        .await
+        .unwrap();
+
+    // Assert
+    assert_eq!(response.status().as_u16(), 400);
+}
 ```
+
+由于我们还没有处理程序，因此正如预期的那样失败了:
+
+```plaintext
+thread 'subscriptions_confirm::confirmations_without_token_are_rejected_with_a_400' panicked at tests/api/subscriptions_confirm.rs:14:5:
+assertion `left == right` failed
+  left: 404
+ right: 400
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+```
+
+### confirm 的骨架 - Green 测试
+
+让我们从一个虚拟处理程序开始，无论传入的请求是什么，它都会返回 200 OK:
+
+```rs
+//! src/routes.rs
+// [...]
+mod subscriptions_confirm;
+
+pub use subscriptions_confirm::*;
+```
+
+```rs
+//! src/routes/subscriptions_confirm.rs
+use actix_web::HttpResponse;
+
+#[tracing::instrument(
+    name = "Confirm a pending subscriber"
+)]
+pub async fn confirm() -> HttpResponse {
+    HttpResponse::Ok().finish()
+}
+```
+
+```rs
+//! src/startup.rs
+// [...]
+use crate::routes::confirm;
+
+pub fn run(
+    listener: TcpListener,
+    db_pool: PgPool,
+    email_client: EmailClient,
+) -> Result<Server, std::io::Error> {
+    // [...]
+
+    let server = HttpServer::new(move || {
+        App::new()
+            // [...]
+            .route("/subscriptions/confirm", web::get().to(confirm))
+            .app_data(db_pool.clone())
+            // [...]
+    })
+    // [...]
+}
+```
+
+现在运行 `cargo test` 时我们应该会得到不同的错误:
+
+```plaintext
+thread 'subscriptions_confirm::confirmations_without_token_are_rejected_with_a_400' panicked at tests/api/subscriptions_confirm.rs:14:5:
+assertion `left == right` failed
+  left: 200
+ right: 400
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+```
+
+成功了！
+
+是时候把 200 OK 变成 400 Bad Request 了。
+
+我们要确保有一个 `subscription_token` 查询参数:我们可以依赖另一个
+
+`actix-web` 的提取器——`Query`。
+
+```rs
+//! src/routes/subscriptions_confirm.rs
+use actix_web::{web, HttpResponse};
+
+#[derive(serde::Deserialize)]
+pub struct Parameters {
+    subscription_token: String,
+}
+
+#[tracing::instrument(
+    name = "Confirm a pending subscriber",
+    skip(_parameters)
+)]
+pub async fn confirm(_parameters: web::Query<Parameters>) -> HttpResponse {
+    HttpResponse::Ok().finish()
+}
+```
+
+参数结构体定义了我们期望在传入请求中看到的所有查询参数。
+
+它需要实现 `serde::Deserialize` 接口，以便 actix-web 能够根据传入的请求路径构建它。只需添加一个 `web::Query<Parameter>` 类型的函数参数来确认，指示 actix-web 仅在提取成功时调用处理程序。如果提取失败，则会自动向调用者返回 400 Bad Request 错误。
+
+我们的测试现在应该可以通过了。d
