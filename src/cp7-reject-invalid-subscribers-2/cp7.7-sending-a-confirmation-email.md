@@ -448,4 +448,205 @@ pub async fn send_confirmation_email(
 
 ## 待确认
 
-TODO: WIP
+现在让我们来看看新订阅者的状态。
+
+我们目前在 `POST /subscriptions` 中将其状态设置为“已确认”，但在他们点击确认链接之前，它应该是“待确认”。
+
+是时候修复这个问题了。
+
+### 待确认 - Red 测试
+
+我们可以先重新看一下我们的第一个“快乐路径”测试:
+
+```rs
+//! tests/api/subscriptions.rs
+// [...]
+
+#[tokio::test]
+async fn subscribe_returns_a_200_for_valid_form_data() {
+    // Arrange
+    let app = spawn_app().await;
+    let body = "name=le%20guin&email=ursula_le_guin%40gmail.com";
+
+    // New section!
+    Mock::given(path("/email"))
+        .and(method("POST"))
+        .respond_with(ResponseTemplate::new(200))
+        .mount(&app.email_server)
+        .await;
+
+    // Act
+    let response = app.post_subscriptions(body.into()).await;
+
+    // Assert
+    assert_eq!(200, response.status().as_u16());
+
+    let saved = sqlx::query!("SELECT email, name FROM subscriptions",)
+        .fetch_one(&app.db_pool)
+        .await
+        .expect("Failed to fetch saved subscription.");
+
+    assert_eq!(saved.email, "ursula_le_guin@gmail.com");
+    assert_eq!(saved.name, "le guin");
+}
+```
+
+这个名字有点夸张——它的作用是检查状态码，并根据数据库中存储的状态执行一些断言。
+
+让我们把它拆分成两个独立的测试用例:
+
+```rs
+//! tests/api/subscriptions.rs
+// [...]
+
+#[tokio::test]
+async fn subscribe_returns_a_200_for_valid_form_data() {
+    // Arrange
+    let app = spawn_app().await;
+    let body = "name=le%20guin&email=ursula_le_guin%40gmail.com";
+
+    // New section!
+    Mock::given(path("/email"))
+        .and(method("POST"))
+        .respond_with(ResponseTemplate::new(200))
+        .mount(&app.email_server)
+        .await;
+
+    // Act
+    let response = app.post_subscriptions(body.into()).await;
+
+    // Assert
+    assert_eq!(200, response.status().as_u16());
+}
+
+#[tokio::test]
+async fn subscribe_persists_the_new_subscriber() {
+    // Arrange
+    let app = spawn_app().await;
+    let body = "name=le%20guin&email=ursula_le_guin%40gmail.com";
+
+    // New section!
+    Mock::given(path("/email"))
+        .and(method("POST"))
+        .respond_with(ResponseTemplate::new(200))
+        .mount(&app.email_server)
+        .await;
+
+    // Act
+    app.post_subscriptions(body.into()).await;
+
+    // Assert
+    let saved = sqlx::query!("SELECT email, name FROM subscriptions",)
+        .fetch_one(&app.db_pool)
+        .await
+        .expect("Failed to fetch saved subscription.");
+
+    assert_eq!(saved.email, "ursula_le_guin@gmail.com");
+    assert_eq!(saved.name, "le guin");
+}
+```
+
+我们现在可以修改第二个测试用例来检查状态。
+
+```rs
+//! tests/api/subscriptions.rs
+// [...]
+
+#[tokio::test]
+async fn subscribe_persists_the_new_subscriber() {
+    // [...]
+    // Assert
+    let saved = sqlx::query!("SELECT email, name, status FROM subscriptions",)
+        .fetch_one(&app.db_pool)
+        .await
+        .expect("Failed to fetch saved subscription.");
+
+    assert_eq!(saved.email, "ursula_le_guin@gmail.com");
+    assert_eq!(saved.name, "le guin");
+    assert_eq!(saved.status, "pending_confirmation");
+}
+```
+
+注: 如果你找不到 `status` 字段, 请仔细检查 `query!` 语句中输入的查询语句是否与示例中的相同。
+
+测试如预期失败:
+
+```plaintext
+thread 'subscriptions::subscribe_persists_the_new_subscriber' panicked at tests/api/subscriptions.rs:52:5:
+assertion `left == right` failed
+  left: "confirmed"
+ right: "pending_confirmation"
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+```
+
+### 待确认 - Green 测试
+
+我们可以通过再次通过插入查询将其变为绿色:
+
+```rs
+//! src/routes/subscriptions.rs
+// [...]
+
+pub async fn insert_subscriber(
+    pool: &PgPool,
+    new_subscriber: &NewSubscriber,
+) -> Result<(), sqlx::Error> {
+    sqlx::query!(
+        r#"
+        INSERT INTO subscriptions (id, email, name, subscribed_at, status)
+        VALUES ($1, $2, $3, $4, 'confirmed')
+        "#,
+        // [...]
+    )
+    // [...]
+}
+```
+
+我们需要将 `confirmed` 修改为 `pending_confirmation`
+
+```rs
+//! src/routes/subscriptions.rs
+
+
+pub async fn insert_subscriber(
+    pool: &PgPool,
+    new_subscriber: &NewSubscriber,
+) -> Result<(), sqlx::Error> {
+    sqlx::query!(
+        r#"
+        INSERT INTO subscriptions (id, email, name, subscribed_at, status)
+        VALUES ($1, $2, $3, $4, 'pending_confirmation')
+        "#,
+        Uuid::new_v4(),
+        new_subscriber.email.as_ref(),
+        new_subscriber.name.as_ref(),
+        Utc::now()
+    )
+    // [...]
+}
+```
+
+现在测试应该通过了
+
+## GET /subscriptions/confirm 的骨架
+
+我们已经完成了 `POST /subscriptions` 的大部分基础工作——是时候将注意力转移到旅程的另一半，`GET /subscriptions/confirm`。
+
+我们想要构建端点的框架——我们需要在 `src/startup.rs` 中注册针对路径的处理程序，并拒绝没有必需查询参数 (`subscription_token`) 的传入请求。
+
+这将使我们能够构建令人满意的路径，而无需一次性编写大量代码——循序渐进!
+
+### confirm 的骨架 - Red 测试
+
+让我们在测试项目中添加一个新模块，用于托管所有处理确认回调的测试用例。
+
+```rs
+//! tests/api/main.rs
+// [...]
+mod subscriptions_confirm;
+```
+
+```rs
+//! tests/api/subscriptions_confirm.rs
+// TODO: WIP
+```
