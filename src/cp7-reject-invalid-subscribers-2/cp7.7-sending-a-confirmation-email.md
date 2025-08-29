@@ -55,6 +55,8 @@ pub async fn spawn_app() -> TestApp {
         let mut c = get_configuration().expect("Failed to read configuration")   ;
         c.database.database_name = Uuid::new_v4().to_string();
         c.application.port = 0;
+        c.email_client.base_url = email_server.uri();
+
         c
     };
 
@@ -123,4 +125,138 @@ note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
 
 ### Green 测试
 
-TODO: wip
+我们的处理程序现在看起来像这样：
+
+```rs
+//! src/routes/subscriptions.rs
+// [...]
+
+#[tracing::instrument(/*[...]*/)]
+pub async fn subscribe(form: web::Form<FormData>, pool: web::Data<PgPool>) -> HttpResponse {
+    let new_subscriber = match form.into_inner().try_into() {
+        Ok(subscriber) => subscriber,
+        Err(_) => return HttpResponse::BadRequest().finish(),
+    };
+    match insert_subscriber(&pool, &new_subscriber).await {
+        Ok(_) => HttpResponse::Ok().finish(),
+        Err(_) => HttpResponse::InternalServerError().finish(),
+    }
+}
+```
+
+要发送电子邮件，我们需要获取 `EmailClient` 的实例。
+
+作为编写模块时所做的工作之一，我们还将其注册到了应用程序上下文中:
+
+```rs
+//! src/startup.rs
+// [...]
+pub fn run(
+    listener: TcpListener,
+    db_pool: PgPool,
+    email_client: EmailClient,
+) -> Result<Server, std::io::Error> {
+    // [...]
+
+    let server = HttpServer::new(move || {
+        App::new()
+            // Middlewares are added using the `wrap` method on `App`
+            .wrap(TracingLogger::default())
+            // [...]
+            // here!
+            .app_data(email_client.clone())
+    })
+    .listen(listener)?
+    .run();
+
+    Ok(server)
+}
+```
+
+因此，我们可以使用 `web::Data` 在我们的处理程序中访问它，就像我们对 `pool` 所做的那样:
+
+```rs
+//! src/routes/subscriptions.rs
+// New import!
+use crate::email_client::EmailClient;
+// [...]
+
+#[tracing::instrument(
+    name = "Adding a new subscriber",
+    skip(form, pool, email_client),
+    fields(
+        subscriber_email = %form.email,
+        subscriber_name = %form.name,
+    )
+)]
+pub async fn subscribe(
+    form: web::Form<FormData>,
+    pool: web::Data<PgPool>,
+    // Get the email client from the app context
+    email_client: web::Data<EmailClient>,
+) -> HttpResponse {
+    let new_subscriber = match form.into_inner().try_into() {
+        Ok(subscriber) => subscriber,
+        Err(_) => return HttpResponse::BadRequest().finish(),
+    };
+    if insert_subscriber(&pool, &new_subscriber).await.is_err() {
+        return HttpResponse::InternalServerError().finish();
+    }
+    // Send a (useless) email to the new subscriber
+    // We are ignoring email delivery errors for now.
+    if email_client
+        .send_email(
+            new_subscriber.email,
+            "Welcome",
+            "Welcome to our newsletter!",
+            "Welcome to our newsletter!",
+        )
+        .await
+        .is_err()
+    {
+        return HttpResponse::InternalServerError().finish();
+    }
+    HttpResponse::Ok().finish()
+}
+```
+
+`subscribe_sends_a_confirmation_email_for_valid_data` 现已通过，但 `subscribe_returns_a_200_for_valid_f` 失败:
+
+```plaintext
+thread 'subscriptions::subscribe_returns_a_200_for_valid_form_data' panicked at tests/api/subscriptions.rs:15:5:
+assertion `left == right` failed
+  left: 200
+ right: 500
+```
+
+它正在尝试发送电子邮件，但由于我们没有在该测试中设置模拟，因此失败了。让我们修复它:
+
+```rs
+//! tests/api/subscriptions.rs
+// [...]
+async fn subscribe_returns_a_200_for_valid_form_data() {
+    // Arrange
+    let app = spawn_app().await;
+    let body = "name=le%20guin&email=ursula_le_guin%40gmail.com";
+
+    // New section!
+    Mock::given(path("/email"))
+        .and(method("POST"))
+        .respond_with(ResponseTemplate::new(200))
+        .mount(&app.email_server)
+        .await;
+
+
+    // Act
+    let response = app.post_subscriptions(body.into()).await;
+
+    // Assert
+    assert_eq!(200, response.status().as_u16());
+
+    // [...]
+}
+```
+
+一切顺利，测试通过了。
+
+目前没有太多需要重构的地方，我们继续吧。
