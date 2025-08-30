@@ -72,3 +72,4 @@
   - [小结](cp7-reject-invalid-subscribers-2/cp7.9-summary.md)
 
 - [错误处理](cp8-error-handling/README.md)
+  - [错误的目的是什么](cp8-error-handling/cp8.1-what-is-the-purpose-of-errors.md)
