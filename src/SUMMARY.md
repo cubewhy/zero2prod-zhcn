@@ -69,3 +69,4 @@
   - [数据库迁移](cp7-reject-invalid-subscribers-2/cp7.6-database-migrations.md)
   - [发送确认邮件](cp7-reject-invalid-subscribers-2/cp7.7-sending-a-confirmation-email.md)
   - [数据库事务](cp7-reject-invalid-subscribers-2/cp7.8-database-transactions.md)
+  - [小结](cp7-reject-invalid-subscribers-2/cp7.9-summary.md)
