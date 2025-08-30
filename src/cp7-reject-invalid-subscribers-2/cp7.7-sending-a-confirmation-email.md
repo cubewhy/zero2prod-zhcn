@@ -925,7 +925,7 @@ pub fn run(
     base_url: String,
 ) -> Result<Server, std::io::Error> {
     // [...]
-    let base_url = ApplicationBaseUrl(base_url);
+    let base_url = web::Data::new(ApplicationBaseUrl(base_url));
 
     let server = HttpServer::new(move || {
         App::new()
@@ -941,5 +941,629 @@ pub fn run(
 ```rs
 //! src/routres/subscriptions.rs
 // [...]
-// TODO: WIP
+#[tracing::instrument(
+    name = "Adding a new subscriber",
+    skip(form, pool, email_client, base_url),
+    fields(
+        subscriber_email = %form.email,
+        subscriber_name = %form.name,
+    )
+)]
+pub async fn subscribe(
+    form: web::Form<FormData>,
+    pool: web::Data<PgPool>,
+    // Get the email client from the app context
+    email_client: web::Data<EmailClient>,
+    // New parameter!
+    base_url: web::Data<ApplicationBaseUrl>,
+) -> HttpResponse {
+    // [...]
+    // Pass the applicaiton url
+    if send_confirmation_email(
+        &email_client, 
+        new_subscriber,
+        &base_url.0
+    )
+        .await
+        .is_err()
+    {
+        return HttpResponse::InternalServerError().finish();
+    }
+    HttpResponse::Ok().finish()
+}
+
+#[tracing::instrument(
+    name = "Send a confirmation email to a new subscriber",
+    skip(email_client, new_subscriber, base_url)
+)]
+pub async fn send_confirmation_email(
+    email_client: &EmailClient,
+    new_subscriber: NewSubscriber,
+    // New parameter!
+    base_url: &str,
+) -> Result<(), reqwest::Error> {
+    let confirmation_link = format!("https://{base_url}/subscriptions/confirm");
+    // [...]
+}
 ```
+
+让我们再次运行测试:
+
+```plaintext
+thread 'subscriptions_confirm::the_link_returned_by_subscribe_returns_a_200_if_c
+alled' panicked at tests/api/subscriptions_confirm.rs:55:10:
+called `Result::unwrap()` on an `Err` value: reqwest::Error { kind: Request, url
+: "http://127.0.0.1/subscriptions/confirm", source: hyper_util::client::legacy::
+Error(Connect, ConnectError("tcp connect error", 127.0.0.1:80, Os { code: 111, k
+ind: ConnectionRefused, message: "Connection refused" })) }
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test subscriptions_confirm::the_link_returned_by_subscribe_returns_a_200_if_call
+ed ... FAILED
+```
+
+主机名正确，但测试中的 reqwest::Client 无法建立连接。到底出了什么问题?
+
+仔细观察，你会发现 port: None ——我们发送请求到 `http://127.0.0.1/subscriptions/confirm`, 而没有指定测试服务器监听的端口。
+
+这里棘手的地方在于事件的顺序：我们在启动服务器之前就传入了 application_url 配置值，
+因此我们不知道它会监听哪个端口（因为端口号是随机分配的，取值为 0！）。
+
+对于生产环境的工作负载来说，这不算什么问题，因为 DNS 域名就足够了——我们只需在测试中解决这个问题即可。
+
+让我们将应用程序端口存储在 TestApp 中它自己的字段中:
+
+```rs
+//! tests/api/helpers.rs
+// [...]
+pub struct TestApp {
+    // [...]
+    // New field!
+    pub port: u16,
+}
+
+pub async fn spawn_app() -> TestApp {
+    /// [...]
+
+    let application = Application::build(configuration.clone())
+        .await
+        .expect("Failed to build application.");
+    let application_port = application.port();
+
+    // Get the port before spawning the application
+    let address = format!("http://127.0.0.1:{}", application_port);
+    let _ = tokio::spawn(application.run_until_stopped());
+
+    TestApp {
+        address,
+        port: application_port,
+        db_pool: get_connection_pool(&configuration.database),
+        email_server
+    }
+}
+```
+
+然后我们可以在测试逻辑中使用它来编辑确认链接:
+
+```rs
+//! tests/api/subscriptions_confirm.rs
+// [...]
+async fn the_link_returned_by_subscribe_returns_a_200_if_called() {
+    // [...]
+    let mut confirmation_link = Url::parse(&raw_confirmation_link).unwrap();
+    // Let's rewrite the URL to inclkude the port
+    confirmation_link.set_port(Some(app.port)).unwrap();
+    
+    // Let's make sure we don't call random APIs on the web
+    assert_eq!(confirmation_link.host_str().unwrap(), "127.0.0.1");
+
+    // Act
+    let response = reqwest::get(confirmation_link)
+        .await
+        .unwrap();
+
+    // Assert
+    assert_eq!(response.status().as_u16(), 200);
+}
+```
+
+虽然不是最漂亮的，但能完成任务。
+
+让我们再次运行测试:
+
+```plaintext
+thread 'subscriptions_confirm::the_link_returned_by_subscribe_returns_a_200_if_c
+alled' panicked at tests/api/subscriptions_confirm.rs:59:5:
+assertion `left == right` failed
+  left: 400
+ right: 200
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+```
+
+我们收到了 400 Bad Request 错误代码，因为我们的确认链接没有附加订阅令牌
+查询参数。
+
+我们暂时通过硬编码来解决这个问题:
+
+```rs
+//! src/routes/subscriptions.rs
+// [...]
+
+pub async fn send_confirmation_email(
+    email_client: &EmailClient,
+    new_subscriber: NewSubscriber,
+    base_url: &str,
+) -> Result<(), reqwest::Error> {
+    let confirmation_link = format!("{base_url}/subscriptions/confirm?subscription_token=mytoken");
+    // [...]
+}
+```
+
+现在测试可以通过了!
+
+### 连接到点 - 重构
+
+从外发邮件请求中提取两个确认链接的逻辑在我们的两个测试中重复出现——随着我们完善此功能的剩余部分，我们可能会添加更多依赖该逻辑的测试。将其提取到其自身的辅助函数中是合理的。
+
+```rs
+//! tests/api/helpers.rs
+// [...]
+
+/// Confirmation links embedded in the request to the email API.
+pub struct ConfirmationLinks {
+    pub html: reqwest::Url,
+    pub plain_text: reqwest::Url,
+}
+
+
+impl TestApp {
+    // [...]
+
+    /// Extract the confirmation links embedded in the request to the email API.
+    pub fn get_confirmation_links(&self, email_request: &wiremock::Request) -> ConfirmationLinks {
+        let body: serde_json::Value = serde_json::from_slice(&email_request.body).unwrap();
+
+        // Extract the link from one of the request fields.
+        let get_link = |s: &str| {
+            let links: Vec<_> = linkify::LinkFinder::new()
+                .links(s)
+                .filter(|l| *l.kind() == linkify::LinkKind::Url)
+                .collect();
+            assert_eq!(links.len(), 1);
+            let raw_link = links[0].as_str().to_owned();
+            let mut confirmation_link = reqwest::Url::parse(&raw_link).unwrap();
+            // Let's make sure we don't call random APIs on the web
+            assert_eq!(confirmation_link.host_str().unwrap(), "127.0.0.1");
+            confirmation_link.set_port(Some(self.port)).unwrap();
+            confirmation_link
+        };
+
+        let html = get_link(&body["HtmlBody"].as_str().unwrap());
+        let plain_text = get_link(&body["TextBody"].as_str().unwrap());
+
+        ConfirmationLinks { html, plain_text }
+    }
+}
+```
+
+我们将其作为 TestApp 上的一个方法添加，以便访问应用程序端口，我们需要将其注入到链接中。
+
+它也可以是一个自由函数，同时接受 `wiremock::Request` 和 `TestApp` (或 `u16`) 作为参数——这完全取决于个人喜好。
+
+现在我们可以大大简化这两个测试用例了:
+
+```rs
+//! tests/api/subscriptions.rs
+// [...]
+
+#[tokio::test]
+async fn subscribe_sends_a_confirmation_email_with_a_link() {
+    // Arrange
+    let app = spawn_app().await;
+    let body = "name=le%20guin&email=ursula_le_guin%40gmail.com";
+
+    Mock::given(path("/email"))
+        .and(method("POST"))
+        .respond_with(ResponseTemplate::new(200))
+        // We are not setting an expectation here anymore
+        // The test is focused on another aspect of the app
+        // behaviour.
+        .mount(&app.email_server)
+        .await;
+
+    // Act
+    app.post_subscriptions(body.into()).await;
+
+    // Assert
+    // Get the first intercepted request
+    let email_request = &app.email_server.received_requests().await.unwrap()[0];
+    let confirmation_links = app.get_confirmation_links(&email_request);
+
+    // The two links should be identical
+    assert_eq!(confirmation_links.html, confirmation_links.plain_text);
+}
+```
+
+```rs
+//! tests/api/subscriptions_confirm.rs
+// [...]
+
+#[tokio::test]
+async fn the_link_returned_by_subscribe_returns_a_200_if_called() {
+    // Arrange
+    let app = spawn_app().await;
+    let body = "name=le%20guin&email=ursula_le_guin%40gmail.com";
+
+    Mock::given(path("/email"))
+        .and(method("POST"))
+        .respond_with(ResponseTemplate::new(200))
+        .mount(&app.email_server)
+        .await;
+    
+    app.post_subscriptions(body.into()).await;
+    let email_request = &app.email_server.received_requests().await.unwrap()[0];
+    let confirmation_links = app.get_confirmation_links(&email_request);
+
+    // Act
+    let response = reqwest::get(confirmation_links.html)
+        .await
+        .unwrap();
+
+    // Assert
+    assert_eq!(response.status().as_u16(), 200);
+}
+```
+
+现在这两个测试用例的意图已经更加清晰了。
+
+## 订阅令牌
+
+我们已经准备好解决这个棘手的问题：我们需要开始生成订阅令牌。
+
+### 订阅令牌 - Red 测试
+
+我们将在刚刚完成的工作基础上添加一个新的测试用例: 我们不再根据返回的状态码进行断言，而是检查存储在数据库中的订阅者的状态。
+
+```rs
+//! tests/api/subscriptions_confirm.rs
+// [...]
+
+#[tokio::test]
+async fn clicking_on_the_confirmation_link_confirms_a_subscriber() {
+    // Arrange
+    let app = spawn_app().await;
+    let body = "name=le%20guin&email=ursula_le_guin%40gmail.com";
+
+    Mock::given(path("/email"))
+        .and(method("POST"))
+        .respond_with(ResponseTemplate::new(200))
+        .mount(&app.email_server)
+        .await;
+
+    app.post_subscriptions(body.into()).await;
+    let email_request = &app.email_server.received_requests().await.unwrap()[0];
+    let confirmation_links = app.get_confirmation_links(&email_request);
+
+    // Act
+    reqwest::get(confirmation_links.html)
+        .await
+        .unwrap()
+        .error_for_status()
+        .unwrap();
+
+    // Assert
+    let saved = sqlx::query!("SELECT email, name, status FROM subscriptions",)
+        .fetch_one(&app.db_pool)
+        .await
+        .expect("Failed to fetch subscriptions.");
+
+    assert_eq!(saved.email, "ursula_le_guin@gmail.com");
+    assert_eq!(saved.name, "le guin");
+    assert_eq!(saved.status, "confirmed");
+}
+```
+
+正如预期的那样，测试失败:
+
+```plaintext
+thread 'subscriptions_confirm::clicking_on_the_confirmation_link_confirms_a_subs
+criber' panicked at tests/api/subscriptions_confirm.rs:77:5:
+assertion `left == right` failed
+  left: "pending_confirmation"
+ right: "confirmed"
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+```
+
+### 订阅令牌 - Green 测试
+
+为了使之前的测试用例通过，我们在确认链接中硬编码了一个订阅令牌：
+
+```rs
+//! src/routes/subscriptions.rs
+// [...]
+pub async fn send_confirmation_email(/*[...]*/) -> Result<(), reqwest::Error> {
+    let confirmation_link = format!(
+        "{}/subscriptions/confirm?subscription_token=mytoken",
+        base_url
+    );
+    // [...]
+}
+```
+
+让我们重构 `send_confirmation_email` 函数, 将 `token` 作为参数——这样可以更轻松地在上游添加生成逻辑。
+
+```rs
+//! src/routes/subscriptions.rs
+// [...]
+
+pub async fn subscribe(
+    form: web::Form<FormData>,
+    pool: web::Data<PgPool>,
+    // Get the email client from the app context
+    email_client: web::Data<EmailClient>,
+    base_url: web::Data<ApplicationBaseUrl>,
+) -> HttpResponse {
+    // [...]
+    if send_confirmation_email(
+        &email_client, 
+        new_subscriber,
+        &base_url.0,
+        // New parameter!
+        "mytoken"
+    )
+        .await
+        .is_err()
+    {
+        return HttpResponse::InternalServerError().finish();
+    }
+    // [...]
+}
+
+pub async fn send_confirmation_email(
+    email_client: &EmailClient,
+    new_subscriber: NewSubscriber,
+    base_url: &str,
+    // New parameter!
+    subscription_token: &str,
+) -> Result<(), reqwest::Error> {
+    let confirmation_link =
+        format!("{base_url}/subscriptions/confirm?subscription_token={subscription_token}");
+    // [...]
+}
+```
+
+我们的订阅令牌并非密码：它们是一次性的，并且不授予访问受保护信息的权限。我们需要它们足够难以猜测，同时牢记，最坏的情况是，不受欢迎的新闻通讯订阅信息出现在某人的收件箱中。
+
+考虑到我们的要求，使用加密安全的伪随机数生成器就足够了——如果你喜欢晦涩的缩写词，可以使用 CSPRNG。
+
+每次我们需要生成订阅令牌时，我们都可以采样一个足够长的字母数字字符序列。
+
+为了实现这一点，我们需要添加 rand 作为依赖项:
+
+```shell
+cargo add rand --features=std_rng
+```
+
+```rs
+//! src/routes/subscriptions.rs
+use rand::distributions::Alphanumeric;
+use rand::Rng;
+// [...]
+
+/// Generate a random 25-characters-long acse-sensitive subscription token.
+fn generate_subscription_token() -> String {
+    let mut rng = rand::rng();
+    std::iter::repeat_with(|| rng.sample(Alphanumeric))
+        .map(char::from)
+        .take(25)
+        .collect()
+}
+```
+
+使用 25 个字符，我们大约可以得到 10^45 个可能的令牌——这对于我们的用例来说应该足够了。
+
+为了在 GET /subscriptions/confirm 中检查令牌是否有效，我们需要使用 POST /subscriptions 将新生成的令牌存储在数据库中。
+
+为此，我们添加了一个表 `subscription_tokens`, 它包含两列: `subscription_token` 和 `subscription_id`。
+
+我们目前在 `insert_subscriber` 中生成订阅者标识符，但从未将其返回给调用者:
+
+```rs
+pub async fn insert_subscriber(
+    pool: &PgPool,
+    new_subscriber: &NewSubscriber,
+) -> Result<(), sqlx::Error> {
+    sqlx::query!(
+        r#"[...]"#,
+        // The subscriber id, never returned or bound to a variable
+        Uuid::new_v4(),
+        // [...]
+    )
+    // [...]
+}
+```
+
+让我们重构 insert_subscriber 来返回id:
+
+```rs
+pub async fn insert_subscriber(
+    pool: &PgPool,
+    new_subscriber: &NewSubscriber,
+) -> Result<Uuid, sqlx::Error> {
+    let subscriber_id = Uuid::new_v4();
+    sqlx::query!(
+        r#"[...]"#,
+        subscriber_id,
+        // [...]
+    )
+    // [...]
+
+    Ok(subscriber_id)
+}
+```
+
+现在我们可以把所有内容联系在一起:
+
+```rs
+//! src/routes/subscriptions.rs
+// [...]
+
+pub async fn subscribe(
+    // [...]
+) -> HttpResponse {
+    // [...]
+    let Ok(subscriber_id) = insert_subscriber(&pool, &new_subscriber).await else {
+        return HttpResponse::InternalServerError().finish();
+    };
+    let subscription_token = generate_subscription_token();
+    if store_token(&pool, subscriber_id, &subscription_token)
+        .await
+        .is_err()
+    {
+        return HttpResponse::InternalServerError().finish();
+    }
+    // Pass the applicaiton url
+    if send_confirmation_email(
+        &email_client,
+        new_subscriber,
+        &base_url.0,
+        &subscription_token,
+    )
+    .await
+    .is_err()
+    {
+        return HttpResponse::InternalServerError().finish();
+    }
+    HttpResponse::Ok().finish()
+}
+
+#[tracing::instrument(
+    name = "Store subscription toke in the database",
+    skip(subscription_token, pool)
+)]
+pub async fn store_token(
+    pool: &PgPool,
+    subscriber_id: Uuid,
+    subscription_token: &str,
+) -> Result<(), sqlx::Error> {
+    sqlx::query!(
+        r#"INSERT INTO subscription_tokens (subscription_token, subscriber_id)
+        VALUES ($1, $2)"#,
+        subscription_token,
+        subscriber_id
+    )
+    .execute(pool)
+    .await
+    .inspect_err(|e| {
+        tracing::error!("Failed to execute query: {e:?}");
+    })?;
+
+    Ok(())
+}
+```
+
+我们已经完成了 `POST /subscriptions`, 让我们转到 `GET /subscription/confirm`:
+
+```rs
+//! src/routes/subscriptions_confirm.rs
+use actix_web::{web, HttpResponse};
+
+#[derive(serde::Deserialize)]
+pub struct Parameters {
+    subscription_token: String,
+}
+
+#[tracing::instrument(
+    name = "Confirm a pending subscriber",
+    skip(_parameters)
+)]
+pub async fn confirm(_parameters: web::Query<Parameters>) -> HttpResponse {
+    HttpResponse::Ok().finish()
+}
+```
+
+我们需要:
+
+- 获取数据库池的引用
+- 检索与令牌关联的订阅者 ID（如果存在）
+- 将订阅者状态更改为已确认
+
+这些我们之前都做过——让我们开始吧!
+
+```rs
+//! src/routes/subscriptions_confirm.rs
+use actix_web::{HttpResponse, web};
+use sqlx::PgPool;
+use uuid::Uuid;
+
+#[derive(serde::Deserialize)]
+pub struct Parameters {
+    subscription_token: String,
+}
+
+#[tracing::instrument(name = "Confirm a pending subscriber", skip(parameters, pool))]
+pub async fn confirm(parameters: web::Query<Parameters>, pool: web::Data<PgPool>) -> HttpResponse {
+    let id = match get_subscriber_id_from_token(&pool, &parameters.subscription_token).await {
+        Ok(id) => id,
+        Err(_) => return HttpResponse::InternalServerError().finish(),
+    };
+
+    match id {
+        // Non-existing token!
+        None => HttpResponse::Unauthorized().finish(),
+        Some(subscriber_id) => {
+            if confirm_subscriber(&pool, subscriber_id).await.is_err() {
+                return HttpResponse::InternalServerError().finish();
+            }
+            HttpResponse::Ok().finish()
+        }
+    }
+}
+
+#[tracing::instrument(name = "Mark subscriber as confirmed", skip(subscriber_id, pool))]
+pub async fn confirm_subscriber(pool: &PgPool, subscriber_id: Uuid) -> Result<(), sqlx::Error> {
+    sqlx::query!(
+        r#"UPDATE subscriptions SET status = 'confirmed' WHERE id = $1"#,
+        subscriber_id
+    )
+    .execute(pool)
+    .await
+    .inspect_err(|e| {
+        tracing::error!("Failed to execute query: {e:?}");
+    })?;
+
+    Ok(())
+}
+
+#[tracing::instrument(name = "Get subscriber_id from token", skip(subscription_token, pool))]
+pub async fn get_subscriber_id_from_token(
+    pool: &PgPool,
+    subscription_token: &str,
+) -> Result<Option<Uuid>, sqlx::Error> {
+    let result = sqlx::query!(
+        r#"SELECT subscriber_id FROM subscription_tokens WHERE subscription_token = $1"#,
+        subscription_token
+    )
+    .fetch_optional(pool)
+    .await
+    .inspect_err(|e| {
+        tracing::error!("Failed to execute query: {e:?}");
+    })?;
+
+    Ok(result.map(|r| r.subscriber_id))
+}
+```
+
+这够了吗? 我们遗漏了什么吗?
+
+只有一个方法可以找到答案。
+
+```shell
+cargo test
+```
+
+```text
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; fin
+ished in 0.47s
+```
+
+哦，是的! 有效!
