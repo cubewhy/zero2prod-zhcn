@@ -462,5 +462,94 @@ trait 对象，就像泛型类型参数一样，是 Rust 中实现多态性的�
 //! src/routes/subscriptions.rs
 // [...]
 
-// TODO: wip
+impl std::error::Error for StoreTokenError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        // The compiler transparently casts `&sqlx::Error` into a `&dyn Error`
+        Some(&self.0)
+    }
+}
 ```
+
+在编写需要处理各种错误的代码时，source 非常有用：它提供了一种结构化的方式来导航错误链，而无需了解您正在处理的具体错误类型。
+
+如果我们查看日志记录, `StoreTokenError` 和 `sqlx::Error` 之间的因果关系在某种程度上是隐含的——我们推断其中一个是另一个的原因，因为它是另一个的一部分。
+
+```text
+[2025-08-31T10:37:05.575Z] ERROR: test/12563 on qby-workspace: [HTTP REQUEST - E
+VENT] Error encountered while processing the incoming HTTP request: StoreTokenEr
+ror(Database(PgDatabaseError { severity: Error, code: "42703", message: "column 
+\"subscription_token\" of relation \"subscription_tokens\" does not exist", deta
+il: None, hint: None, position: Some(Original(34)), where: None, schema: None, t
+able: None, column: None, data_type: None, constraint: None, file: Some("parse_t
+arget.c"), line: Some(1065), routine: Some("checkInsertTargets") })) (http.clien
+t_ip=127.0.0.1,http.flavor=1.1,http.host=127.0.0.1:41991,http.method=POST,http.r
+oute=/subscriptions,http.scheme=http,http.status_code=500,http.target=/subscript
+ions,http.user_agent="",line=258,otel.kind=server,otel.name="POST /subscriptions
+",otel.status_code=ERROR,request_id=9f312468-2353-43a4-b0be-61c85fdea6d8,target=
+tracing_actix_web::middleware)
+```
+
+让我们来看一下更明确的事情:
+
+```rs
+//! src/routes/subscriptions.rs
+
+// Notice that we have removed `#[derive(Debug)]`
+pub struct StoreTokenError(sqlx::Error);
+
+impl std::fmt::Debug for StoreTokenError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}\nCaused by: \n\t{}", self, self.0)
+    }
+}
+```
+
+日志记录现在已经没有什么可想象的了:
+
+```text
+    exception.details: A database error was encountered while trying to store a 
+subscription token.
+    Caused by: 
+        error returned from database: column "subscription_token" of relation "s
+ubscription_tokens" does not exist
+```
+
+`exception.details` 更易于阅读，并且仍然传达了我们之前提到的所有相关信息。
+
+使用 `source`, 我们可以编写一个函数，为任何实现 `Error` 的类型提供类似的表示:
+
+```rs
+//! src/routes/subscriptions.rs
+// [...]
+
+fn error_chain_fmt(
+    e: &impl std::error::Error,
+    f: &mut std::fmt::Formatter<'_>,
+) -> std::fmt::Result {
+    writeln!(f, "{}\n", e)?;
+    let mut current = e.source();
+    while let Some(cause) = current {
+        writeln!(f, "Caused by:\n\t{cause}")?;
+        current = cause.source();
+    }
+
+    Ok(())
+}
+```
+
+它会遍历导致我们尝试打印失败的整个错误链。
+
+然后，我们可以修改 `StoreTokenError` 的 `Debug` 实现来使用它:
+
+```rs
+//! src/routes/subscriptions.rs
+// [...]
+
+impl std::fmt::Debug for StoreTokenError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        error_chain_fmt(self, f)
+    }
+}
+```
+
+结果是相同的——如果我们想要类似的 `Debug` 表示，我们可以在处理其他错误时重用它。
