@@ -77,3 +77,4 @@
   - [控制流错误](cp8-error-handling/cp8.3-errors-for-control-flow.md)
   - [避免 "泥球" 错误枚举](cp8-error-handling/cp8.4-avoid-ball-of-mud-error-enums.md)
   - [谁应该记录错误](cp8-error-handling/cp8.5-who-should-log-errors.md)
+  - [小结](cp8-error-handling/cp8.6-summary.md)
