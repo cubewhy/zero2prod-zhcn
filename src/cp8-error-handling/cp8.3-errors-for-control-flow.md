@@ -325,5 +325,112 @@ impl From<sqlx::Error> for SubscribeError {
 //! src/routes/subscriptions.rs
 // [...]
 
-// TODO: wip
+pub async fn subscribe(
+    form: web::Form<FormData>,
+    pool: web::Data<PgPool>,
+    // Get the email client from the app context
+    email_client: web::Data<EmailClient>,
+    base_url: web::Data<ApplicationBaseUrl>,
+) -> Result<HttpResponse, SubscribeError> {
+    // [...]
+    let mut transaction = pool.begin().await
+        .map_err(SubscribeError::PoolError)?;
+    let subscriber_id = insert_subscriber(/* */).await
+        .map_err(SubscribeError::InsertSubscriberError)?;
+    // [...]
+
+    store_token(/* */).await?;
+
+    transaction.commit().await
+        .map_err(SubscribeError::TransactionCommitError)?;
+
+    // [...]
+}
 ```
+
+代码编译后, `exception.message` 再次变得有用:
+
+```text
+    exception.details: Failed to store the confirmation token for a new subscrib
+er.
+    
+    Caused by:
+        A database error was encountered while trying to store a subscription to
+ken.
+    Caused by:
+        error returned from database: column "subscription_token" of relation "s
+ubscription_tokens" does not exist
+```
+
+## 使用 thiserror 移除模板代码
+
+我们花了大约 90 行代码来实现 `SubscriberError` 及其周围的所有机制，以便实现所需的行为并在日志中获得有用的诊断信息。
+
+这代码量很大，包含大量样板代码（例如源代码或 From 的实现）。
+
+我们能做得更好吗?
+
+嗯，我不确定我们能否编写更少的代码，但我们可以找到另一种方法：我们可以使用宏来生成所有这些样板代码!
+
+碰巧的是，生态系统中已经有一个很棒的 crate 用于此目的: `thiserror`。让我们将它添加到我们的依赖项中:
+
+```shell
+cargo add thiserror
+```
+
+它提供了一个 derive 宏，可以生成我们刚刚手写的大部分代码。
+
+我们来看看它的实际效果:
+
+```rs
+//! src/routes/subscriptions.rs
+// [...]
+#[derive(thiserror::Error)]
+pub enum SubscribeError {
+    #[error("{0}")]
+    ValidationError(String),
+    #[error("Failed to store the confirmation token for a new subscriber.")]
+    StoreTokenError(#[from] StoreTokenError),
+    #[error("Failed to send a confirmation email.")]
+    SendEmailError(#[from] reqwest::Error),
+    #[error("Failed to acquire a Postgres connection from the pool")]
+    PoolError(#[source] sqlx::Error),
+    #[error("Failed to insert new subscriber in the database.")]
+    InsertSubscriberError(#[source] sqlx::Error),
+    #[error("Failed to commit SQL transaction to store a new  subscriber")]
+    TransactionCommitError(#[source] sqlx::Error),
+}
+
+// We are still using a bespoke implementation of `Debug`
+// to get a nice report using the error source chain
+impl std::fmt::Debug for SubscribeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        error_chain_fmt(self, f)
+    }
+}
+
+pub async fn subscribe(
+    // [...]
+) -> Result<HttpResponse, SubscribeError> {
+    let new_subscriber = form.into_inner().try_into()
+        .map_err(SubscribeError::ValidationError)?;
+    // [...]
+}
+```
+
+我们把它精简到了 21 行——还不错!
+
+让我们来分析一下现在的情况。
+
+`thiserror::Error` 是一个通过 `#[derive(/* */)]` 属性使用的过程宏。
+
+我们之前见过并使用过这些宏，例如 `#[derive(Debug)]` 或 `#[derive(serde::Serialize)]`。
+
+该宏在编译时接收 `SubscribeError` 的定义作为输入，并返回另一个 token 流作为输出——它会生成新的 Rust 代码，然后将其编译成最终的二进制文件。
+在 `#[derive(thiserror::Error)]` 的上下文中，我们可以访问其他属性来实现我们想要的行为:
+
+- `#[error(/* */)]` 定义了它所应用到的枚举变量的 Display 表示形式。例如，当在 `SubscribeError::SendEmailError` 的实例上调用 `Display` 时，它将返回 `Failed to send a confirmed email.` 。你可以在最终表示形式中插入值，例如ValidationError 之上 `#[error("{0}")]` 中的 {0} 指的是包装的字符串字段，模仿了访问元组结构体（例如 self.0）字段的语法。
+- `#[source]` 用于表示 Error::source 中应返回的根本原因；
+- `#[from]` 自动将 From 的实现派生为所应用类型的顶级错误类型（例如，`impl From<StoreTokenError> for SubscribeError {/* */}`）。带有 `#[from]` 注解的字段也用作错误源，这样我们就不必在同一个字段上使用两个注解了（例如，`#[source]` `#[from] reqwest::Error`）。
+
+我想提醒您注意一个小细节: 我们没有对 `ValidationError` 变体使用 `#[from]` 或 `#[source]`。这是因为 `String` 没有实现 `Error` trait，因此它无法在 `Error::source` 中返回——这与我们之前手动实现 `Error::source` 时遇到的限制相同，导致我们在 `ValidationError` 的情况下返回 `None`。
