@@ -81,3 +81,4 @@
 
 - [简单的新闻通讯发送](cp9-naive-newsletter-delivery/README.md)
   - [用户故事并非一成不变](cp9-naive-newsletter-delivery/cp9.1-user-stories-are-not-set-in-stone.md)
+  - [不要给未订阅用户发垃圾邮件](cp9-naive-newsletter-delivery/cp9.2-do-not-spam-unconfirmed-subscribers.md)
