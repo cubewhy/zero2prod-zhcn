@@ -78,3 +78,5 @@
   - [避免 "泥球" 错误枚举](cp8-error-handling/cp8.4-avoid-ball-of-mud-error-enums.md)
   - [谁应该记录错误](cp8-error-handling/cp8.5-who-should-log-errors.md)
   - [小结](cp8-error-handling/cp8.6-summary.md)
+
+- [简单的新闻通讯发送](cp9-naive-newsletter-delivery/README.md)
