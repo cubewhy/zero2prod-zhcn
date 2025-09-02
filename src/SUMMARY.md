@@ -80,3 +80,4 @@
   - [小结](cp8-error-handling/cp8.6-summary.md)
 
 - [简单的新闻通讯发送](cp9-naive-newsletter-delivery/README.md)
+  - [用户故事并非一成不变](cp9-naive-newsletter-delivery/cp9.1-user-stories-are-not-set-in-stone.md)
