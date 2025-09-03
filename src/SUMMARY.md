@@ -93,3 +93,4 @@
 
 - [保护我们的 API](cp10-securing-our-api/README.md)
   - [鉴权](cp10-securing-our-api/cp10.1-authentication.md)
+  - [基于密码的鉴权](cp10-securing-our-api/cp10.2-password-based-authentication.md)
