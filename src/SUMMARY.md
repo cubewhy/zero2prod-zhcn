@@ -90,3 +90,5 @@
   - [存储数据的验证](cp9-naive-newsletter-delivery/cp9.8-validation-of-stored-data.md)
   - [简单方法的局限性](cp9-naive-newsletter-delivery/cp9.9-limitations-of-the-naive-approach.md)
   - [小结](cp9-naive-newsletter-delivery/cp9.10-summary.md)
+
+- [保护我们的 API](cp10-securing-our-api/README.md)
