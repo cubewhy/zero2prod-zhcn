@@ -89,3 +89,4 @@
   - [发送新闻邮件](cp9-naive-newsletter-delivery/cp9.7-send-newsletter-emails.md)
   - [存储数据的验证](cp9-naive-newsletter-delivery/cp9.8-validation-of-stored-data.md)
   - [简单方法的局限性](cp9-naive-newsletter-delivery/cp9.9-limitations-of-the-naive-approach.md)
+  - [小结](cp9-naive-newsletter-delivery/cp9.10-summary.md)
