@@ -85,3 +85,4 @@
   - [所有确认订阅者都会收到新刊](cp9-naive-newsletter-delivery/cp9.3-all-confirmed-subscribers-receive-new-issues.md)
   - [实现的策略](cp9-naive-newsletter-delivery/cp9.4-implementation-strategy.md)
   - [Body 结构](cp9-naive-newsletter-delivery/cp9.5-body-schema.md)
+  - [获取已确认订阅者列表](cp9-naive-newsletter-delivery/cp9.6-fetch-confirmed-subscribers-list.md)
