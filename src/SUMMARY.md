@@ -92,3 +92,4 @@
   - [小结](cp9-naive-newsletter-delivery/cp9.10-summary.md)
 
 - [保护我们的 API](cp10-securing-our-api/README.md)
+  - [鉴权](cp10-securing-our-api/cp10.1-authentication.md)
