@@ -96,3 +96,4 @@
   - [基于密码的鉴权](cp10-securing-our-api/cp10.2-password-based-authentication.md)
   - [这安全吗](cp10-securing-our-api/cp10.3-is-it-safe.md)
   - [插曲：后续步骤](cp10-securing-our-api/cp10.4-interlude-next-steps.md)
+  - [登录表单](cp10-securing-our-api/cp10.5-login-forms.md)
