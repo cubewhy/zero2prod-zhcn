@@ -98,3 +98,4 @@
   - [插曲：后续步骤](cp10-securing-our-api/cp10.4-interlude-next-steps.md)
   - [登录表单](cp10-securing-our-api/cp10.5-login-forms.md)
   - [登录](cp10-securing-our-api/cp10.6-login.md)
+  - [会话](cp10-securing-our-api/cp10.7-sessions.md)
