@@ -99,3 +99,4 @@
   - [登录表单](cp10-securing-our-api/cp10.5-login-forms.md)
   - [登录](cp10-securing-our-api/cp10.6-login.md)
   - [会话](cp10-securing-our-api/cp10.7-sessions.md)
+  - [种子用户](cp10-securing-our-api/cp10.8-seed-users.md)
