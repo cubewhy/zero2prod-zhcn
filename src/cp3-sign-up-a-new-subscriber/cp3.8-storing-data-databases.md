@@ -629,6 +629,23 @@ pub struct Settings {}
 
 让我们在“设置”中为每个配置值添加一个字段:
 
+```rs
+#[derive(serde::Deserialize)]
+pub struct Settings {
+    pub database: DatabaseSettings,
+    pub application_port: u16
+}
+
+#[derive(serde::Deserialize)]
+pub struct DatabaseSettings {
+    pub username: String,
+    pub password: String,
+    pub port: u16,
+    pub host: String,
+    pub database_name: String,
+}
+```
+
 我们需要在 `DatabaseSettings` 之上添加 `#[derive(serde::Deserialize)]`, 否则编译器会报错
 
 ```plaintext
