@@ -30,7 +30,7 @@
 
 在过去的二十年里，数据库产品种类繁多。
 
-从数据模型的角度来看, **NoSQL** 运动为我们带来了文档存储 (例如 [MongoDB](https://www.mongodb.com/)) c、键值存储 (例如 [AWS DynamoDB](https://aws.amazon.com/dynamodb/))、图形数据库(例如 [Neo4J](https://neo4j.com/)) 等。
+从数据模型的角度来看, **NoSQL** 运动为我们带来了文档存储 (例如 [MongoDB](https://www.mongodb.com/)) 、键值存储 (例如 [AWS DynamoDB](https://aws.amazon.com/dynamodb/))、图形数据库(例如 [Neo4J](https://neo4j.com/)) 等。
 
 我们有一些数据库使用 RAM 作为主存储（例如 [Redis](https://redis.io/)）。
 
@@ -394,7 +394,7 @@ sqlx migrate add create_subscriptions_table
 
 您的项目中现在应该会出现一个新的顶级目录 - migrations。sqlx 的 CLI 将把我们项目的所有迁移文件存储在这里。
 
-在 migrations 下，您应该已经有一个名为 {timestamp}_create_subscriptions_table.sql 的文件。
+在 migrations 下，您应该已经有一个名为 {timestamp}\_create_subscriptions_table.sql 的文件。
 
 我们需要在这里编写第一个迁移文件的 SQL 代码。
 
@@ -477,7 +477,7 @@ then
     -e POSTGRES_DB=${DB_NAME} \
     -p "${DB_PORT}":5432 \
     -d postgres \
-    postgres -N 1000 
+    postgres -N 1000
   # ^ Increased maximum number of connections for testing purposes
 fi
 
@@ -546,7 +546,7 @@ features = [
 - `uuid` 增加了将 SQL UUID 映射到 [uuid crate](https://docs.rs/uuid/) 中的 Uuid 类型的支持。我们需要它来处理我们的 id 列；
 - `chrono` 增加了将 SQL timestamptz 映射到 [chrono cratev](https://docs.rs/chrono/latest/chrono/) 中的 `DateTime<T>` 类型的支持。我们需要它来处理我们的 subscribed_at 列；
 - `migrate` 允许我们访问 **sqlx-cli** 后台用来管理迁移的相同函数。事实证明，它对我们的测试套件很有用。
-这些应该足够我们完成本章所需的工作了。
+  这些应该足够我们完成本章所需的工作了。
 
 ### 配置管理
 
